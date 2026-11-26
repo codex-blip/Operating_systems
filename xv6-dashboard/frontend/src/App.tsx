@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster, toast } from 'sonner'
 import {
-  Activity, ArrowUpRight, Check, ChevronRight, Command as CommandIcon, HardDrive,
+  ArrowUpRight, Check, ChevronRight, Command as CommandIcon, HardDrive,
   Cpu, GitBranch, Menu, Play, Radio, Sparkles, Square, TerminalSquare,
 } from 'lucide-react'
 import TaskCard from './components/TaskCard'
@@ -22,10 +22,10 @@ import './App.css'
 const Hero3D = lazy(() => import('./components/Hero3D'))
 
 const fallbackTasks: Task[] = [
-  { id: 'task1', name: 'Periodic Alarms', description: 'User-level timer interrupts with sigalarm and sigreturn.', command: 'alarmtest', est_seconds: 20 },
-  { id: 'task2a', name: 'Large Files', description: 'Double-indirect blocks expand xv6 file capacity.', command: 'bigfile', est_seconds: 180 },
-  { id: 'task2b', name: 'Symbolic Links', description: 'Path resolution follows links safely, even under concurrency.', command: 'symlinktest', est_seconds: 20 },
-  { id: 'task3', name: 'Memory-Mapped Files', description: 'Lazy file-backed pages, shared writeback, and fork support.', command: 'mmaptest', est_seconds: 40 },
+  { id: 'task1', name: 'Periodic Alarms', description: 'User-level timer interrupts with sigalarm and sigreturn.', command: 'alarmtest', est_seconds: 5 },
+  { id: 'task2a', name: 'Large Files', description: 'Doubly-indirect blocks expand xv6 capacity to 65,803 blocks.', command: 'bigfile', est_seconds: 215 },
+  { id: 'task2b', name: 'Symbolic Links', description: 'Path resolution follows links safely with cycle protection.', command: 'symlinktest', est_seconds: 8 },
+  { id: 'task3', name: 'Memory-Mapped Files', description: 'Lazy file-backed pages, shared writeback, and fork support.', command: 'mmaptest', est_seconds: 5 },
   { id: 'usertests', name: 'Full Regression Suite', description: 'The full xv6 userspace regression suite.', command: 'usertests', est_seconds: 600 },
 ]
 
@@ -39,6 +39,12 @@ const showError = (error: unknown) => {
   return 'error'
 }
 
+const formatElapsed = (seconds: number) => {
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`
+}
+
 export default function App() {
   const [settings, setSettings] = useState<RuntimeSettings>(loadSettings)
   const client = useMemo(() => makeClient(settings), [settings])
@@ -50,14 +56,16 @@ export default function App() {
   const [runState, setRunState] = useState<RunState>('idle')
   const [offline, setOffline] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [activeTask, setActiveTask] = useState<TaskId>('task1')
+  const [runningTask, setRunningTask] = useState<TaskId | null>(null)
+  const [runningLabel, setRunningLabel] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<TaskId>('task1')
   const [selectedHero, setSelectedHero] = useState<TaskId | 'bigfiledemo'>('task1')
   const [tab, setTab] = useState<Tab>('terminal')
   const [output, setOutput] = useState<string[]>([])
   const [demoMode, setDemoMode] = useState(false)
+  const [elapsedSec, setElapsedSec] = useState(0)
   const controllerRef = useRef<AbortController | null>(null)
-  const activeTaskRef = useRef<TaskId>('task1')
+  const runningTaskRef = useRef<TaskId | null>(null)
 
   const refresh = useCallback(async (initial = false) => {
     try {
@@ -86,6 +94,7 @@ export default function App() {
   }, [refresh])
 
   useEffect(() => { saveSettings(settings) }, [settings])
+
   useEffect(() => {
     const openHistory = () => setHistoryOpen(true)
     const closeDemo = (event: KeyboardEvent) => { if (event.key === 'Escape') setDemoMode(false) }
@@ -93,7 +102,23 @@ export default function App() {
     window.addEventListener('keydown', closeDemo)
     return () => { window.removeEventListener('show-history', openHistory); window.removeEventListener('keydown', closeDemo) }
   }, [])
+
+  const reportedState = runState === 'idle' ? serverStatus.state : runState
+  const active = reportedState === 'running' || reportedState === 'building'
+
+  useEffect(() => {
+    if (!active) return
+    const started = Date.now()
+    const tick = window.setInterval(() => {
+      setElapsedSec(Math.floor((Date.now() - started) / 1000))
+    }, 1000)
+    return () => window.clearInterval(tick)
+  }, [active])
+
+  const displayElapsed = active ? elapsedSec : 0
+
   const append = (text: string) => setOutput((value) => [...value.slice(-1300), text])
+
   const updateResult = (task: string, result: Result) => {
     setResults((value) => ({ ...value, [task]: result }))
     setHistory((value) => [{
@@ -102,36 +127,63 @@ export default function App() {
     }, ...value].slice(0, 100))
   }
 
+  function isTask(value: string): value is TaskId {
+    return fallbackTasks.some((task) => task.id === value)
+  }
+
   const handleEvent = (event: StreamEvent) => {
     if (event.type === 'started') {
       setRunState(event.task === 'rebuild' ? 'building' : 'running')
-    } else if (event.type === 'build') append(`${event.line}\r\n`)
-    else if (event.type === 'output') append(event.data)
-    else if (event.type === 'task_started') {
+      setRunningLabel(event.task)
+    } else if (event.type === 'build') {
+      append(`${event.line}\r\n`)
+    } else if (event.type === 'output') {
+      append(event.data)
+    } else if (event.type === 'task_started') {
       const task = event.task
       if (isTask(task)) {
-        setActiveTask(task)
-        activeTaskRef.current = task
+        setRunningTask(task)
+        runningTaskRef.current = task
+        setRunningLabel(task)
         setSelectedTask(task)
+        setSelectedHero(task)
         setResults((value) => ({ ...value, [task]: { ...createDefaultResult(task), status: 'running' } }))
         setRunState('running')
       }
     } else if (event.type === 'subtest') {
+      const task = runningTaskRef.current
+      if (!task) return
       setResults((value) => {
-        const task = activeTaskRef.current
         const prior = value[task] || createDefaultResult(task)
-        return { ...value, [task]: { ...prior, status: 'running', subtests: [...prior.subtests.filter((test) => test.name !== event.name), { name: event.name, status: event.status, detail: event.detail }] } }
+        return {
+          ...value,
+          [task]: {
+            ...prior,
+            status: 'running',
+            subtests: [
+              ...prior.subtests.filter((test) => test.name !== event.name),
+              { name: event.name, status: event.status, detail: event.detail },
+            ],
+          },
+        }
       })
-    } else if (event.type === 'task_finished') updateResult(event.task, event.result)
-    else if (event.type === 'finished') {
+    } else if (event.type === 'task_finished') {
+      updateResult(event.task, event.result)
+    } else if (event.type === 'finished') {
       updateResult(event.task, event.result)
       toast[event.result.status === 'pass' ? 'success' : 'error'](`${event.task}: ${event.result.status}`, { description: `${event.result.duration.toFixed(1)} seconds` })
       setRunState('idle')
+      setRunningTask(null)
+      runningTaskRef.current = null
+      setRunningLabel(null)
       setServerStatus((value) => ({ ...value, state: 'idle', current_task: null, run_id: null }))
       controllerRef.current = null
     } else if (event.type === 'all_finished') {
       Object.entries(event.results).forEach(([task, result]) => updateResult(task, result))
       setRunState('idle')
+      setRunningTask(null)
+      runningTaskRef.current = null
+      setRunningLabel(null)
       setServerStatus((value) => ({ ...value, state: 'idle', current_task: null, run_id: null }))
       controllerRef.current = null
       const failures = Object.values(event.results).filter((result) => result.status !== 'pass').length
@@ -139,35 +191,46 @@ export default function App() {
     } else if (event.type === 'error') {
       append(`\r\n\x1b[31m${event.code}: ${event.message}\x1b[0m\r\n`)
       setRunState('idle')
+      setRunningTask(null)
+      runningTaskRef.current = null
+      setRunningLabel(null)
       controllerRef.current = null
       toast.error(event.code === 'busy' ? 'Another run is already active' : event.message)
       void refresh()
     }
   }
 
-  function isTask(value: string): value is TaskId {
-    return fallbackTasks.some((task) => task.id === value)
-  }
-
   const start = async (request: StreamRequest) => {
     if (controllerRef.current) { toast.warning('A test is already running.'); return }
     if (offline) { toast.error('Backend is offline. Start the dashboard backend first.'); return }
-    const activeId = request.kind === 'run' ? request.task : request.kind === 'runAll' ? 'task1' : null
+
+    const activeId: TaskId | null = request.kind === 'run' ? request.task : request.kind === 'runAll' ? 'task1' : null
+    setRunningTask(activeId)
+    runningTaskRef.current = activeId
+    setRunningLabel(
+      request.kind === 'rebuild' ? (request.clean ? 'clean rebuild' : 'rebuild')
+        : request.kind === 'command' ? request.command
+          : activeId || 'run-all',
+    )
+
     if (activeId) {
-      setActiveTask(activeId)
-      activeTaskRef.current = activeId
       setSelectedTask(activeId)
-      if (request.kind !== 'runAll') setResults((value) => ({ ...value, [activeId]: { ...createDefaultResult(activeId), status: 'running' } }))
+      setSelectedHero(activeId)
+      setResults((value) => ({ ...value, [activeId]: { ...createDefaultResult(activeId), status: 'running' } }))
     }
-    if (request.kind === 'rebuild') setRunState('building')
-    else setRunState('running')
-    if (request.kind === 'runAll') setResults((value) => ({ ...value, task1: { ...createDefaultResult('task1'), status: 'running' } }))
+    setTab('terminal')
+    setElapsedSec(0)
+    setRunState(request.kind === 'rebuild' ? 'building' : 'running')
+
     const controller = new AbortController()
     controllerRef.current = controller
     try {
       await client.stream(request, handleEvent, controller.signal)
       if (controllerRef.current === controller) {
         setRunState('idle')
+        setRunningTask(null)
+        runningTaskRef.current = null
+        setRunningLabel(null)
         controllerRef.current = null
       }
       void refresh()
@@ -175,6 +238,9 @@ export default function App() {
       if (controller.signal.aborted) return
       if (showError(error) === 'offline') setOffline(true)
       setRunState('idle')
+      setRunningTask(null)
+      runningTaskRef.current = null
+      setRunningLabel(null)
       controllerRef.current = null
     }
   }
@@ -196,6 +262,9 @@ export default function App() {
     controller.abort()
     controllerRef.current = null
     setRunState('idle')
+    setRunningTask(null)
+    runningTaskRef.current = null
+    setRunningLabel(null)
     append('\r\n\x1b[33m[dashboard] run cancelled\x1b[0m\r\n')
     toast.message('Run stopped')
     try { await cancellation } catch { toast.warning('The stream stopped locally, but the backend did not confirm cancellation.') }
@@ -203,102 +272,321 @@ export default function App() {
   }
 
   const clearTerminal = () => setOutput([])
+
   const commandAction = (action: PaletteAction) => {
     if (action === 'all') void start({ kind: 'runAll' })
     else if (action === 'cancel') void stop()
     else if (action === 'clear') clearTerminal()
     else if (action === 'demo') setDemoMode((value) => !value)
     else if (action === 'rebuild') void start({ kind: 'rebuild', clean: false })
-    else if (action === 'bigfiledemo') void start({ kind: 'command', command: 'bigfiledemo' })
+    else if (action === 'bigfiledemo') { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }
     else if (action === 'usertests' || action === 'task1' || action === 'task2a' || action === 'task2b' || action === 'task3') void start({ kind: 'run', task: action })
   }
 
   const statusList = Object.fromEntries(fallbackTasks.slice(0, 4).map((task) => [task.id, results[task.id]?.status || 'idle'])) as Record<string, TaskStatus>
   const passed = fallbackTasks.slice(0, 4).filter((task) => results[task.id]?.status === 'pass').length
-  const reportedState = runState === 'idle' ? serverStatus.state : runState
   const onlineStatus = offline ? 'offline' : reportedState === 'building' ? 'building' : reportedState === 'running' ? 'running' : 'idle'
-  const active = reportedState === 'running' || reportedState === 'building'
+  const currentRunningTask: TaskId | null = runningTask ?? (serverStatus.current_task && isTask(serverStatus.current_task) ? serverStatus.current_task : null)
 
-  return <div className={`app-shell ${demoMode ? 'demo-mode' : ''}`}>
-    <div className="ambient ambient-one" /><div className="ambient ambient-two" />
-    {demoMode && <button className="demo-exit" onClick={() => setDemoMode(false)}>Exit demo <kbd>ESC</kbd></button>}
-    <header className="topbar">
-      <a className="brand" href="#" aria-label="xv6 Kernel Lab home"><span className="brand-mark"><Cpu size={18} /></span><span className="brand-copy"><strong>xv6 <b>Kernel Lab</b></strong><small>CS-303 · OPERATING SYSTEMS</small></span></a>
-      <div className="header-center"><span className="header-separator" /><div className="connection"><span className={`connection-dot ${offline ? 'dot-offline' : active ? 'dot-active' : ''}`} /><span>{offline ? 'Backend offline' : settings.useMock ? 'Preview environment' : onlineStatus === 'idle' ? 'Backend connected' : `${onlineStatus} · ${serverStatus.current_task || 'system'}`}</span></div><StatusPill status={onlineStatus} /></div>
-      <div className="header-actions">
-        <button className={`mode-switch ${settings.useMock ? 'mode-mock' : 'mode-live'}`} onClick={() => setSettings((value) => ({ ...value, useMock: !value.useMock }))}><span className="mode-dot" />{settings.useMock ? 'Mock' : 'Live'}</button>
-        <SettingsPopover settings={settings} onSave={setSettings} />
-        <button className={`demo-toggle ${demoMode ? 'demo-active' : ''}`} onClick={() => setDemoMode((value) => !value)}><Sparkles size={14} />{demoMode ? 'Exit demo' : 'Demo mode'}</button>
-        <button className="palette-trigger" onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}><CommandIcon size={14} /><span>Quick actions</span><kbd>⌘ K</kbd></button>
-        <button className="icon-button small-menu" aria-label="Open command palette" onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}><Menu size={17} /></button>
-      </div>
-    </header>
+  return (
+    <div className={`app-shell ${demoMode ? 'demo-mode' : ''}`}>
+      <div className="ambient ambient-one" />
+      <div className="ambient ambient-two" />
+      {demoMode && (
+        <button className="demo-exit" onClick={() => setDemoMode(false)}>
+          Exit demo <kbd>ESC</kbd>
+        </button>
+      )}
 
-    <main className="page-content">
-      <AnimatePresence>
-        {offline && <motion.div className="offline-banner" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-          <div className="offline-icon"><Radio size={15} /></div><div><strong>Can’t reach the xv6 backend</strong><span>Start the Flask service to run live tests. Your mock preview still works.</span></div><code>cd ~/xv6-dashboard &amp;&amp; ./start.sh</code><button onClick={() => void refresh()}>Retry <ArrowUpRight size={13} /></button>
-        </motion.div>}
-      </AnimatePresence>
+      <header className="topbar">
+        <a className="brand" href="#" aria-label="xv6 Kernel Lab home">
+          <span className="brand-mark"><Cpu size={18} /></span>
+          <span className="brand-copy">
+            <strong>xv6 <b>Kernel Lab</b></strong>
+            <small>CS-303 · OPERATING SYSTEMS</small>
+          </span>
+        </a>
 
-      <section className="hero-section">
-        <div className="hero-copy">
-          <div className="eyebrow"><span className="eyebrow-line" />KERNEL IMPLEMENTATION · LIVE TEST CONSOLE</div>
-          <h1>Small kernel.<br /><span>Big ideas.</span></h1>
-          <p className="hero-subtitle">Four xv6 extensions, one live dashboard.<br />Observe every test as the kernel runs.</p>
-          <div className="hero-meta"><span><span className="live-indicator" />{active ? 'TEST RUN IN PROGRESS' : 'SYSTEM READY'}</span><i /> <span>RISC-V · XV6-LABS</span></div>
-          <div className="hero-buttons"><button className="hero-run" onClick={() => void start({ kind: 'runAll' })} disabled={active}><Play size={14} fill="currentColor" />{active ? 'Tests running' : 'Run all tests'}<ChevronRight size={15} /></button><button className="hero-demo" onClick={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }} disabled={active}><HardDrive size={13} /> Quick file demo</button><button className="hero-shortcut" onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}>⌘K <span>for quick actions</span></button></div>
+        <div className="header-center">
+          <span className={`connection-dot ${offline ? 'dot-offline' : active ? 'dot-active' : ''}`} />
+          <span>
+            {offline ? 'Backend offline'
+              : settings.useMock ? 'Mock preview'
+                : active ? `${onlineStatus} · ${runningLabel || serverStatus.current_task || 'system'}`
+                  : 'Connected · QEMU RISC-V'}
+          </span>
+          <StatusPill status={onlineStatus} />
         </div>
-        <div className="hero-visual">
-          <div className="hero-visual-label"><span>LIVE KERNEL MAP</span><span className="hero-map-status"><i /> {active ? 'EXECUTING' : 'READY'}</span></div>
-          <Suspense fallback={<div className="hero-fallback"><div className="fallback-core">xv6</div><span>Preparing kernel map…</span></div>}><Hero3D passed={passed} selected={selectedHero} statuses={statusList} onSelect={(task) => { setSelectedHero(task); setSelectedTask(task); setActiveTask(task); activeTaskRef.current = task }} onRunDemo={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }} /></Suspense>
-          <div className="hero-progress"><div className="progress-ring"><svg viewBox="0 0 46 46"><circle cx="23" cy="23" r="19" /><circle className="progress-value" cx="23" cy="23" r="19" style={{ strokeDasharray: `${(passed / 4) * 119.4} 119.4` }} /></svg><strong>{passed}<small>/4</small></strong></div><div><span>PROJECT PROGRESS</span><strong>{passed === 4 ? 'All tasks passed' : `${passed} of 4 passed`}</strong></div></div>
-          <div className="hero-annotation"><span className="annotation-dot" />{selectedHero === 'bigfiledemo' ? 'LARGE FILE DEMO' : selectedTask.toUpperCase()} <span>· {selectedHero === 'bigfiledemo' ? '512-block run' : 'selected module'}</span></div>
-        </div>
-        <div className="hero-bottom-note"><span className="note-icon"><Activity size={13} /></span><span>Built for curiosity. Validated by tests.</span><span className="note-right">4 KERNEL EXTENSIONS <i /> 1 RISC-V SYSTEM</span></div>
-      </section>
 
-      <section className="tasks-section">
-        <div className="section-heading"><div><span className="section-eyebrow">THE PROJECT</span><h2>Kernel extensions <span className="subtle-count">04</span></h2></div><button className="section-link" onClick={() => void start({ kind: 'runAll' })}>Run sequence <ArrowUpRight size={14} /></button></div>
-        <div className="task-grid">
-          {loading ? fallbackTasks.slice(0, 4).map((task) => <div className="task-skeleton" key={task.id}><i /><i /><i /><i /></div>) : tasks.filter((task) => task.id !== 'usertests').map((task, index) => <motion.div key={task.id} initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.06 }}>
-            <TaskCard task={task} result={results[task.id] || createDefaultResult(task.id)} selected={selectedTask === task.id} running={active && (activeTask === task.id || activeTask === 'task1' && task.id === 'task1')} onRun={() => void start({ kind: 'run', task: task.id })} onSelect={() => { setSelectedHero(task.id); setSelectedTask(task.id); setActiveTask(task.id) }} />
-          </motion.div>)}
+        <div className="header-actions">
+          <button
+            className={`mode-switch ${settings.useMock ? 'mode-mock' : 'mode-live'}`}
+            onClick={() => setSettings((value) => ({ ...value, useMock: !value.useMock }))}
+            title="Toggle between live backend and mock preview"
+          >
+            <span className="mode-dot" />
+            {settings.useMock ? 'Mock' : 'Live'}
+          </button>
+          <button className={`demo-toggle ${demoMode ? 'demo-active' : ''}`} onClick={() => setDemoMode((value) => !value)}>
+            <Sparkles size={14} />
+            {demoMode ? 'Exit demo' : 'Demo'}
+          </button>
+          <button className="palette-trigger" onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}>
+            <CommandIcon size={14} />
+            <span>Actions</span>
+            <kbd>⌘K</kbd>
+          </button>
+          <SettingsPopover settings={settings} onSave={setSettings} />
+          <button className="icon-button small-menu" aria-label="Open command palette" onClick={() => window.dispatchEvent(new CustomEvent('open-command-palette'))}>
+            <Menu size={18} />
+          </button>
         </div>
-        <div className="regression-card">
-          <div className="regression-icon"><Check size={17} /></div><div className="regression-copy"><div><strong>Full system regression</strong><span className="regression-tag">USERTESTS</span></div><p>Check the core xv6 behavior still holds after every extension.</p></div><div className="regression-meta"><StatusPill status={results.usertests?.status || 'idle'} /><span>~10 min</span></div><button onClick={() => void start({ kind: 'run', task: 'usertests' })} disabled={active}><Play size={12} fill="currentColor" /> Run suite</button>
-        </div>
-      </section>
+      </header>
 
-      <section className="workspace-section">
-        <div className="workspace-heading"><div><span className="section-eyebrow">OBSERVE THE SYSTEM</span><h2>Live workspace</h2></div><div className="workspace-meta"><span className={active ? 'workspace-live active' : 'workspace-live'}><i />{active ? 'STREAMING' : 'READY'}</span><span>QEMU · RISC-V 64</span></div></div>
-        <div className="workspace-grid">
-          <div className="workspace-main">
-            <div className="workspace-tabs" role="tablist" aria-label="Workspace panels">
-              <button className={tab === 'terminal' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'terminal'} onClick={() => setTab('terminal')}><TerminalSquare size={14} />Terminal<span className="tab-count">{output.length ? 'LIVE' : ''}</span></button>
-              <button className={tab === 'diff' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'diff'} onClick={() => setTab('diff')}><GitBranch size={14} />Diff</button>
-              <button className={tab === 'explain' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'explain'} onClick={() => setTab('explain')}><Sparkles size={14} />How it works</button>
-              <div className="tab-spacer" /><span className="selected-module">{selectedTask} <ChevronRight size={12} /></span>
+      <main className="page-content">
+        <AnimatePresence>
+          {offline && (
+            <motion.div className="offline-banner" initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
+              <div className="offline-icon"><Radio size={16} /></div>
+              <div>
+                <strong>Can’t reach the xv6 backend</strong>
+                <span>Start the Flask service to run live tests, or switch to Mock mode in the top bar.</span>
+              </div>
+              <code>cd ~/xv6-dashboard &amp;&amp; ./start.sh</code>
+              <button onClick={() => void refresh()}>Retry <ArrowUpRight size={14} /></button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <section className="hero-section">
+          <div className="hero-copy">
+            <div className="eyebrow">
+              <span className="eyebrow-line" />
+              RISC-V KERNEL LAB · LIVE TEST CONSOLE
             </div>
-            <AnimatePresence mode="wait">
-              <motion.div key={tab} className={`workspace-panel ${tab === 'terminal' ? 'terminal-workspace' : ''}`} initial={{ opacity: 0, y: 5 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -5 }} transition={{ duration: 0.16 }}>
-                {tab === 'terminal' ? <TerminalPanel output={output} busy={active} onCommand={(command) => void start({ kind: 'command', command })} onClear={clearTerminal} selected={selectedTask} />
-                  : tab === 'diff' ? <DiffPanel task={selectedTask} client={client} />
-                    : <ExplainerPanel task={selectedTask} />}
-              </motion.div>
-            </AnimatePresence>
-            {active && <div className="active-run-bar"><span className="run-spinner" /><span>{runState === 'building' ? 'Building kernel and filesystem' : `Running ${activeTask}`}<small> · output streams into terminal</small></span><button onClick={() => void stop()}><Square size={11} fill="currentColor" /> Stop</button></div>}
+            <h1>Small kernel.<br /><span>Big ideas.</span></h1>
+            <p className="hero-subtitle">
+              Periodic alarms, 65,803-block large files, symbolic links, and lazy memory-mapped files — tested live in QEMU.
+            </p>
+            <div className="hero-buttons">
+              <button className="hero-run" onClick={() => void start({ kind: 'runAll' })} disabled={active}>
+                <Play size={14} fill="currentColor" />
+                {active ? 'Tests running…' : 'Run all tests'}
+                <ChevronRight size={15} />
+              </button>
+              <button
+                className="hero-demo"
+                onClick={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }}
+                disabled={active}
+              >
+                <HardDrive size={14} /> Quick file demo
+              </button>
+              {active && (
+                <button className="hero-stop" onClick={() => void stop()}>
+                  <Square size={12} fill="currentColor" /> Stop
+                </button>
+              )}
+            </div>
           </div>
-          <aside className="workspace-sidebar">
-            <RunControls busy={active} state={reportedState} current={serverStatus.current_task || (active ? activeTask : null)} results={results} onRunAll={() => void start({ kind: 'runAll' })} onRunUsertests={() => void start({ kind: 'run', task: 'usertests' })} onCancel={() => void stop()} onRebuild={(clean) => void start({ kind: 'rebuild', clean })} onRunBigfileDemo={() => void start({ kind: 'command', command: 'bigfiledemo' })} demoMode={demoMode} />
-            <HistoryPanel history={history} loading={loading} demoMode={demoMode} />
-          </aside>
+
+          <div className="hero-visual">
+            <Suspense fallback={<div className="hero-fallback"><div className="fallback-core">xv6</div><span>Preparing kernel map…</span></div>}>
+              <Hero3D
+                passed={passed}
+                selected={selectedHero}
+                statuses={statusList}
+                onSelect={(task) => { setSelectedHero(task); setSelectedTask(task) }}
+                onRunDemo={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }}
+              />
+            </Suspense>
+            <div className="hero-progress">
+              <div className="progress-ring">
+                <svg viewBox="0 0 46 46">
+                  <circle cx="23" cy="23" r="19" />
+                  <circle className="progress-value" cx="23" cy="23" r="19" style={{ strokeDasharray: `${(passed / 4) * 119.4} 119.4` }} />
+                </svg>
+                <strong>{passed}<small>/4</small></strong>
+              </div>
+              <div>
+                <span>PROGRESS</span>
+                <strong>{passed === 4 ? 'All tasks passed' : `${passed} of 4 passed`}</strong>
+              </div>
+            </div>
+            <div className="hero-annotation">
+              <span className="annotation-dot" />
+              {selectedHero === 'bigfiledemo' ? 'LARGE FILE DEMO' : selectedTask.toUpperCase()}
+              <span> · {selectedHero === 'bigfiledemo' ? '512-block run' : 'selected'}</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="tasks-section">
+          <div className="section-heading">
+            <div>
+              <span className="section-eyebrow">THE PROJECT</span>
+              <h2>Kernel extensions <span className="subtle-count">04</span></h2>
+            </div>
+            <span className="section-hint">Click any card to inspect its diff and architecture below</span>
+          </div>
+
+          <div className="task-grid">
+            {loading
+              ? fallbackTasks.slice(0, 4).map((task) => <div className="task-skeleton" key={task.id}><i /><i /><i /><i /></div>)
+              : tasks.filter((task) => task.id !== 'usertests').map((task, index) => (
+                <motion.div key={task.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.05 }}>
+                  <TaskCard
+                    task={task}
+                    result={results[task.id] || createDefaultResult(task.id)}
+                    selected={selectedTask === task.id}
+                    running={active && currentRunningTask === task.id}
+                    busy={active}
+                    onRun={() => void start({ kind: 'run', task: task.id })}
+                    onSelect={() => { setSelectedHero(task.id); setSelectedTask(task.id) }}
+                  />
+                </motion.div>
+              ))}
+          </div>
+
+          <div className="regression-card">
+            <div className="regression-icon"><Check size={17} /></div>
+            <div className="regression-copy">
+              <div><strong>Full system regression</strong><span className="regression-tag">USERTESTS</span></div>
+              <p>Verify core xv6 process, memory, and filesystem invariants still pass after all extensions.</p>
+            </div>
+            <div className="regression-meta">
+              <StatusPill status={active && currentRunningTask === 'usertests' ? 'running' : results.usertests?.status || 'idle'} />
+              <span>~10 min</span>
+            </div>
+            <button onClick={() => void start({ kind: 'run', task: 'usertests' })} disabled={active}>
+              <Play size={13} fill="currentColor" /> Run suite
+            </button>
+          </div>
+        </section>
+
+        <section className="workspace-section">
+          <div className="workspace-heading">
+            <div>
+              <span className="section-eyebrow">OBSERVE THE SYSTEM</span>
+              <h2>Live workspace</h2>
+            </div>
+            <div className="workspace-meta">
+              <span className={active ? 'workspace-live active' : 'workspace-live'}>
+                <i />{active ? `STREAMING · ${formatElapsed(displayElapsed)}` : 'READY'}
+              </span>
+              <span>QEMU · RISC-V 64</span>
+            </div>
+          </div>
+
+          <div className="workspace-grid">
+            <div className="workspace-main">
+              <div className="workspace-tabs" role="tablist" aria-label="Workspace panels">
+                <button className={tab === 'terminal' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'terminal'} onClick={() => setTab('terminal')}>
+                  <TerminalSquare size={15} />Terminal{output.length > 0 && <span className="tab-count">LIVE</span>}
+                </button>
+                <button className={tab === 'diff' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'diff'} onClick={() => setTab('diff')}>
+                  <GitBranch size={15} />Diff
+                </button>
+                <button className={tab === 'explain' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'explain'} onClick={() => setTab('explain')}>
+                  <Sparkles size={15} />How it works
+                </button>
+                <div className="tab-spacer" />
+                <span className="selected-module">{selectedTask}</span>
+              </div>
+
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={tab}
+                  className={`workspace-panel ${tab === 'terminal' ? 'terminal-workspace' : ''}`}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.14 }}
+                >
+                  {tab === 'terminal'
+                    ? <TerminalPanel output={output} busy={active} onCommand={(command) => void start({ kind: 'command', command })} onClear={clearTerminal} selected={selectedTask} />
+                    : tab === 'diff'
+                      ? <DiffPanel task={selectedTask} client={client} />
+                      : <ExplainerPanel task={selectedTask} />}
+                </motion.div>
+              </AnimatePresence>
+
+              {active && (
+                <div className="active-run-bar">
+                  <span className="run-spinner" />
+                  <span>
+                    {runState === 'building' ? 'Building kernel and filesystem' : `Running ${runningLabel || currentRunningTask || 'task'}`}
+                    <small> · elapsed {formatElapsed(displayElapsed)}</small>
+                  </span>
+                  <button onClick={() => void stop()}>
+                    <Square size={11} fill="currentColor" /> Stop
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <aside className="workspace-sidebar">
+              <RunControls
+                busy={active}
+                state={reportedState}
+                current={currentRunningTask}
+                results={results}
+                onRunAll={() => void start({ kind: 'runAll' })}
+                onCancel={() => void stop()}
+                onRebuild={(clean) => void start({ kind: 'rebuild', clean })}
+                onRunBigfileDemo={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }}
+                demoMode={demoMode}
+              />
+              <HistoryPanel history={history} loading={loading} demoMode={demoMode} />
+            </aside>
+          </div>
+        </section>
+
+        <footer className="footer">
+          <div className="brand-mark footer-mark"><Cpu size={14} /></div>
+          <span>xv6 Kernel Lab</span>
+          <i />
+          <span>CS-303 Operating Systems</span>
+          <span className="footer-right">QEMU RISC-V 64 · 4 kernel extensions</span>
+        </footer>
+      </main>
+
+      {historyOpen && (
+        <div className="history-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setHistoryOpen(false) }}>
+          <section className="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+            <div className="history-modal-heading">
+              <div>
+                <span className="section-eyebrow">RUN ARCHIVE</span>
+                <h2 id="history-title">All activity</h2>
+              </div>
+              <button onClick={() => setHistoryOpen(false)} aria-label="Close activity">×</button>
+            </div>
+            {history.length ? (
+              <div className="history-modal-table">
+                <table className="history-table">
+                  <thead>
+                    <tr><th>TIME</th><th>TEST</th><th>RESULT</th><th>DURATION</th></tr>
+                  </thead>
+                  <tbody>
+                    {history.map((item) => (
+                      <tr key={`${item.run_id}-${item.task}`}>
+                        <td>{new Date(item.started_at).toLocaleString()}</td>
+                        <td>{item.task}</td>
+                        <td><span className={`history-status hs-${item.status}`}>{item.status}</span></td>
+                        <td>{item.duration.toFixed(1)}s</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="history-empty">No test runs recorded yet.</div>
+            )}
+          </section>
         </div>
-      </section>
-      <footer className="footer"><div className="brand-mark footer-mark"><Cpu size={14} /></div><span>xv6 Kernel Lab</span><i /> <span>CS-303 Operating Systems</span><span className="footer-right">Built to make kernel work visible <span>✳</span></span></footer>
-    </main>
-    {historyOpen && <div className="history-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setHistoryOpen(false) }}><section className="history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title"><div className="history-modal-heading"><div><span className="section-eyebrow">RUN ARCHIVE</span><h2 id="history-title">All activity</h2></div><button onClick={() => setHistoryOpen(false)} aria-label="Close activity">×</button></div>{history.length ? <div className="history-modal-table"><table className="history-table"><thead><tr><th>TIME</th><th>TEST</th><th>RESULT</th><th>DURATION</th></tr></thead><tbody>{history.map((item) => <tr key={`${item.run_id}-${item.task}`}><td>{new Date(item.started_at).toLocaleString()}</td><td>{item.task}</td><td><span className={`history-status hs-${item.status}`}>{item.status}</span></td><td>{item.duration.toFixed(1)}s</td></tr>)}</tbody></table></div> : <div className="history-empty">No test runs recorded yet.</div>}</section></div>}
-    <CommandPalette onAction={commandAction} />
-    <Toaster theme="dark" position="bottom-right" richColors closeButton />
-  </div>
+      )}
+
+      <CommandPalette onAction={commandAction} />
+      <Toaster theme="dark" position="bottom-right" richColors closeButton />
+    </div>
+  )
 }
