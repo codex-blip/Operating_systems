@@ -390,32 +390,36 @@ export default function App() {
           </div>
 
           <div className="hero-visual">
-            <Suspense fallback={<div className="hero-fallback"><div className="fallback-core">xv6</div><span>Preparing kernel map…</span></div>}>
-              <Hero3D
-                passed={passed}
-                selected={selectedHero}
-                statuses={statusList}
-                onSelect={(task) => { setSelectedHero(task); setSelectedTask(task) }}
-                onRunDemo={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }}
-              />
-            </Suspense>
-            <div className="hero-progress">
-              <div className="progress-ring">
-                <svg viewBox="0 0 46 46">
-                  <circle cx="23" cy="23" r="19" />
-                  <circle className="progress-value" cx="23" cy="23" r="19" style={{ strokeDasharray: `${(passed / 4) * 119.4} 119.4` }} />
-                </svg>
-                <strong>{passed}<small>/4</small></strong>
-              </div>
-              <div>
-                <span>PROGRESS</span>
-                <strong>{passed === 4 ? 'All tasks passed' : `${passed} of 4 passed`}</strong>
-              </div>
+            <div className="hero-stage">
+              <Suspense fallback={<div className="hero-fallback"><div className="fallback-core">xv6</div><span>Preparing kernel map…</span></div>}>
+                <Hero3D
+                  passed={passed}
+                  selected={selectedHero}
+                  statuses={statusList}
+                  onSelect={(task) => { setSelectedHero(task); setSelectedTask(task) }}
+                  onRunDemo={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }}
+                />
+              </Suspense>
             </div>
-            <div className="hero-annotation">
-              <span className="annotation-dot" />
-              {selectedHero === 'bigfiledemo' ? 'LARGE FILE DEMO' : selectedTask.toUpperCase()}
-              <span> · {selectedHero === 'bigfiledemo' ? '512-block run' : 'selected'}</span>
+            <div className="hero-visual-bar">
+              <div className="hero-progress">
+                <div className="progress-ring">
+                  <svg viewBox="0 0 46 46">
+                    <circle cx="23" cy="23" r="19" />
+                    <circle className="progress-value" cx="23" cy="23" r="19" style={{ strokeDasharray: `${(passed / 4) * 119.4} 119.4` }} />
+                  </svg>
+                  <strong>{passed}<small>/4</small></strong>
+                </div>
+                <div>
+                  <span>PROGRESS</span>
+                  <strong>{passed === 4 ? 'All tasks passed' : `${passed} of 4 passed`}</strong>
+                </div>
+              </div>
+              <div className="hero-annotation">
+                <span className="annotation-dot" />
+                {selectedHero === 'bigfiledemo' ? 'LARGE FILE DEMO' : selectedTask.toUpperCase()}
+                <span> · {selectedHero === 'bigfiledemo' ? '512-block run' : 'selected'}</span>
+              </div>
             </div>
           </div>
         </section>

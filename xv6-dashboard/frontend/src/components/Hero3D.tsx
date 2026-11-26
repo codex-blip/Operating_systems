@@ -57,7 +57,13 @@ function OrbitNode({ index, status, selected, onClick }: { index: number; status
     ref.current.scale.setScalar(pulse)
   })
   return (
-    <group ref={ref} position={position} onClick={onClick}>
+    <group
+      ref={ref}
+      position={position}
+      onClick={onClick}
+      onPointerOver={() => { document.body.style.cursor = 'pointer' }}
+      onPointerOut={() => { document.body.style.cursor = '' }}
+    >
       <mesh>
         <sphereGeometry args={[selected ? 0.21 : 0.16, 24, 24]} />
         <meshStandardMaterial color={color} emissive={color} emissiveIntensity={status === 'idle' ? 0.2 : 1} roughness={0.3} />
@@ -130,6 +136,6 @@ export default function Hero3D(props: Props) {
   return <div className="hero-canvas-host" ref={host}>{webgl
     ? <SceneBoundary><Suspense fallback={<div className="hero-fallback"><div className="fallback-core">xv6</div><span>Four changes. One kernel.</span></div>}><Scene {...props} visible={visible} /></Suspense></SceneBoundary>
     : <div className="hero-fallback"><div className="fallback-core">xv6</div><span>Four changes. One kernel.</span></div>}
-    {webgl && <div className="scene-overlay" aria-label="Kernel modules"><div className="scene-core-label"><strong>XV6</strong><span>KERNEL CORE</span></div>{taskInfo.map((task, index) => <button key={task.id} className={`orbit-tag orbit-tag-${index} ${props.selected === task.id ? 'is-selected' : ''}`} onClick={() => task.id === 'bigfiledemo' ? props.onRunDemo() : props.onSelect(task.id)} aria-label={task.id === 'bigfiledemo' ? 'Run the 512-block large-file demo' : `Select ${task.label}`}><small>{task.short} · {task.label}{task.id === 'bigfiledemo' ? ' · RUN' : ''}</small></button>)}</div>}
+    {webgl && <div className="scene-overlay" aria-hidden="true"><div className="scene-core-label"><strong>XV6</strong><span>KERNEL</span></div></div>}
   </div>
 }
