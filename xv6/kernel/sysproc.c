@@ -119,7 +119,7 @@ sys_sigreturn(void)
   if(!p->in_handler)
     return -1;
 
-  *p->trapframe = *p->alarm_tf;
+  *p->trapframe = p->alarm_tf;
   p->in_handler = 0;
   saved_a0 = p->trapframe->a0;
   return saved_a0;

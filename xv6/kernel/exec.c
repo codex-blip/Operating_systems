@@ -122,6 +122,11 @@ exec(char *path, char **argv)
     
   // Commit to the user image.
   vm_unmap_all(p);
+  p->mmap_base = TRAPFRAME - PGSIZE;
+  p->alarm_interval = 0;
+  p->alarm_ticks = 0;
+  p->in_handler = 0;
+  p->alarm_handler = 0;
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
   p->sz = sz;

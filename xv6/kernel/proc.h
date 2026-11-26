@@ -110,7 +110,7 @@ struct proc {
   uint64 sz;                   // Size of process memory (bytes)
   pagetable_t pagetable;       // User page table
   struct trapframe *trapframe; // data page for trampoline.S
-  struct trapframe *alarm_tf;  // saved user registers while in an alarm handler
+  struct trapframe alarm_tf;   // saved user registers while in an alarm handler
   int alarm_interval;          // timer ticks between alarm handler calls
   int alarm_ticks;             // timer ticks since the last handler call
   int in_handler;              // non-zero while executing an alarm handler

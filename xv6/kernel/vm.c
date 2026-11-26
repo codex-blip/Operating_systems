@@ -187,6 +187,40 @@ vm_fault(pagetable_t pagetable, uint64 va, int write)
 }
 
 int
+vm_prefault(pagetable_t pagetable, uint64 va, uint64 len, int write)
+{
+  struct proc *p = myproc();
+  if(p == 0 || p->pagetable != pagetable || len == 0)
+    return 0;
+
+  uint64 end = va + len;
+  if(end < va)
+    end = MAXVA;
+
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(!v->used)
+      continue;
+    uint64 vstart = v->addr;
+    uint64 vend = v->addr + v->len;
+    uint64 lo = va > vstart ? va : vstart;
+    uint64 hi = end < vend ? end : vend;
+    if(lo >= hi)
+      continue;
+    for(uint64 a = PGROUNDDOWN(lo); a < hi; a += PGSIZE){
+      pte_t *pte = walk(pagetable, a, 0);
+      if(pte == 0 || (*pte & PTE_V) == 0){
+        if(vm_fault(pagetable, a, write) < 0)
+          return -1;
+      } else if((write && !(*pte & PTE_W)) || (!write && !(*pte & PTE_R))){
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
+
+int
 vm_unmap(struct proc *p, int index, uint64 addr, uint64 len)
 {
   struct vma *v;
@@ -503,6 +537,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
          (*pte & PTE_W) == 0)
         return -1;
     }
+    *pte |= PTE_D;
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);
     if(n > len)

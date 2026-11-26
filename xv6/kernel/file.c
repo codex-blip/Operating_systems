@@ -118,6 +118,8 @@ fileread(struct file *f, uint64 addr, int n)
       return -1;
     r = devsw[f->major].read(1, addr, n);
   } else if(f->type == FD_INODE){
+    if(n > 0 && vm_prefault(myproc()->pagetable, addr, n, 1) < 0)
+      return -1;
     ilock(f->ip);
     if((r = readi(f->ip, 1, addr, f->off, n)) > 0)
       f->off += r;
@@ -158,6 +160,9 @@ filewrite(struct file *f, uint64 addr, int n)
       int n1 = n - i;
       if(n1 > max)
         n1 = max;
+
+      if(vm_prefault(myproc()->pagetable, addr + i, n1, 0) < 0)
+        break;
 
       begin_op();
       ilock(f->ip);

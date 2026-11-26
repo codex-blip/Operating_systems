@@ -22,11 +22,11 @@ int getpid(void);
 char* sbrk(int);
 int sleep(int);
 int uptime(void);
-int sigalarm(int, void*);
+int sigalarm(int, void (*)());
 int sigreturn(void);
 int symlink(const char*, const char*);
-typedef uint size_t;
-typedef int off_t;
+typedef uint64 size_t;
+typedef long off_t;
 void *mmap(void*, size_t, int, int, int, off_t);
 int munmap(void*, size_t);
 

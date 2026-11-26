@@ -84,7 +84,7 @@ usertrap(void)
     if(p->alarm_interval > 0 && !p->in_handler){
       p->alarm_ticks++;
       if(p->alarm_ticks >= p->alarm_interval){
-        *p->alarm_tf = *p->trapframe;
+        p->alarm_tf = *p->trapframe;
         p->trapframe->epc = p->alarm_handler;
         p->in_handler = 1;
         p->alarm_ticks = 0;

@@ -482,10 +482,8 @@ void
 itrunc(struct inode *ip)
 {
   int i, j;
-  struct buf *bp;
-  uint *a;
-  uint indirect[NINDIRECT];
-  uint addr;
+  struct buf *bp, *bp2;
+  uint *a, *a2;
 
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
@@ -497,35 +495,32 @@ itrunc(struct inode *ip)
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
-    memmove(indirect, a, sizeof(indirect));
+    for(j = 0; j < NINDIRECT; j++){
+      if(a[j])
+        bfree(ip->dev, a[j]);
+    }
     brelse(bp);
-    for(j = 0; j < NINDIRECT; j++)
-      if(indirect[j])
-        bfree(ip->dev, indirect[j]);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
 
   if(ip->addrs[NDIRECT+1]){
-    addr = ip->addrs[NDIRECT+1];
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
     for(i = 0; i < NINDIRECT; i++){
-      bp = bread(ip->dev, addr);
-      a = (uint*)bp->data;
-      uint indirect_addr = a[i];
-      brelse(bp);
-      if(indirect_addr == 0)
+      if(a[i] == 0)
         continue;
-
-      bp = bread(ip->dev, indirect_addr);
-      a = (uint*)bp->data;
-      memmove(indirect, a, sizeof(indirect));
-      brelse(bp);
-      for(j = 0; j < NINDIRECT; j++)
-        if(indirect[j])
-          bfree(ip->dev, indirect[j]);
-      bfree(ip->dev, indirect_addr);
+      bp2 = bread(ip->dev, a[i]);
+      a2 = (uint*)bp2->data;
+      for(j = 0; j < NINDIRECT; j++){
+        if(a2[j])
+          bfree(ip->dev, a2[j]);
+      }
+      brelse(bp2);
+      bfree(ip->dev, a[i]);
     }
-    bfree(ip->dev, addr);
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
     ip->addrs[NDIRECT+1] = 0;
   }
 

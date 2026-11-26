@@ -356,7 +356,7 @@ sys_open(void)
     ilock(ip);
   }
 
-  if(ip->type == T_DIR && omode != O_RDONLY){
+  if(ip->type == T_DIR && (omode & ~O_NOFOLLOW) != O_RDONLY){
     iunlockput(ip);
     end_op();
     return -1;
@@ -402,20 +402,41 @@ sys_symlink(void)
 {
   char target[MAXPATH];
   char path[MAXPATH];
-  struct inode *ip;
+  char name[DIRSIZ];
+  struct inode *ip, *dp;
+  struct dirent de;
+  uint off;
   int n;
 
-  begin_op();
   if(argstr(0, target, sizeof(target)) < 0 ||
-     argstr(1, path, sizeof(path)) < 0 ||
-     (ip = create(path, T_SYMLINK, 0, 0)) == 0){
+     argstr(1, path, sizeof(path)) < 0)
+    return -1;
+
+  begin_op();
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
     end_op();
     return -1;
   }
 
   n = strlen(target);
   if(writei(ip, 0, (uint64)target, 0, n) != n){
-    iunlockput(ip);
+    iunlock(ip);
+    if((dp = nameiparent(path, name)) != 0){
+      ilock(dp);
+      struct inode *found = dirlookup(dp, name, &off);
+      if(found == ip){
+        memset(&de, 0, sizeof(de));
+        writei(dp, 0, (uint64)&de, off, sizeof(de));
+        ilock(ip);
+        ip->nlink--;
+        iupdate(ip);
+        iunlock(ip);
+      }
+      if(found)
+        iput(found);
+      iunlockput(dp);
+    }
+    iput(ip);
     end_op();
     return -1;
   }
@@ -427,7 +448,7 @@ sys_symlink(void)
 uint64
 sys_mmap(void)
 {
-  uint64 addr, len, offset, maplen, mapaddr;
+  uint64 addr, len, offset, maplen, mapaddr, minaddr;
   int prot, flags, fd;
   struct file *f;
   struct proc *p = myproc();
@@ -450,11 +471,31 @@ sys_mmap(void)
     return -1;
 
   maplen = PGROUNDUP(len);
-  if(maplen < len || p->mmap_base < maplen)
+  minaddr = PGROUNDUP(p->sz) + PGSIZE;
+  if(maplen < len || maplen > TRAPFRAME - PGSIZE || minaddr < p->sz)
     return -1;
-  mapaddr = p->mmap_base - maplen;
-  if(mapaddr < PGROUNDUP(p->sz) + PGSIZE ||
-     mapaddr + maplen > TRAPFRAME - PGSIZE)
+
+  // Find the highest free page-aligned gap below TRAPFRAME - PGSIZE.
+  mapaddr = (TRAPFRAME - PGSIZE) - maplen;
+  for(;;){
+    int overlap = 0;
+    for(int i = 0; i < NVMA; i++){
+      if(!p->vmas[i].used)
+        continue;
+      uint64 vstart = p->vmas[i].addr;
+      uint64 vend = vstart + p->vmas[i].len;
+      if(mapaddr < vend && mapaddr + maplen > vstart){
+        if(vstart < maplen)
+          return -1;
+        mapaddr = vstart - maplen;
+        overlap = 1;
+        break;
+      }
+    }
+    if(!overlap)
+      break;
+  }
+  if(mapaddr < minaddr || mapaddr + maplen > TRAPFRAME - PGSIZE)
     return -1;
 
   for(slot = 0; slot < NVMA; slot++)
@@ -470,26 +511,29 @@ sys_mmap(void)
   p->vmas[slot].flags = flags;
   p->vmas[slot].file = filedup(f);
   p->vmas[slot].used = 1;
-  p->mmap_base = mapaddr;
+  if(mapaddr < p->mmap_base)
+    p->mmap_base = mapaddr;
   return mapaddr;
 }
 
 uint64
 sys_munmap(void)
 {
-  uint64 addr, len;
+  uint64 addr, len, maplen;
   struct proc *p = myproc();
 
   argaddr(0, &addr);
   argaddr(1, &len);
-  if(addr == 0 || len == 0 || (addr & (PGSIZE-1)) ||
-     (len & (PGSIZE-1)) || addr + len < addr)
+  if(addr == 0 || len == 0 || (addr & (PGSIZE-1)))
+    return -1;
+  maplen = PGROUNDUP(len);
+  if(maplen < len || addr + maplen < addr)
     return -1;
 
   for(int i = 0; i < NVMA; i++){
     struct vma *v = &p->vmas[i];
     if(v->used && addr >= v->addr && addr < v->addr + v->len)
-      return vm_unmap(p, i, addr, len);
+      return vm_unmap(p, i, addr, maplen);
   }
   return -1;
 }

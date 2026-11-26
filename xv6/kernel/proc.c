@@ -132,11 +132,7 @@ found:
     return 0;
   }
 
-  if((p->alarm_tf = (struct trapframe *)kalloc()) == 0){
-    freeproc(p);
-    release(&p->lock);
-    return 0;
-  }
+  memset(&p->alarm_tf, 0, sizeof(p->alarm_tf));
   p->alarm_interval = 0;
   p->alarm_ticks = 0;
   p->in_handler = 0;
@@ -170,9 +166,7 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
-  if(p->alarm_tf)
-    kfree((void*)p->alarm_tf);
-  p->alarm_tf = 0;
+  memset(&p->alarm_tf, 0, sizeof(p->alarm_tf));
   p->alarm_interval = 0;
   p->alarm_ticks = 0;
   p->in_handler = 0;
@@ -180,7 +174,7 @@ freeproc(struct proc *p)
   p->mmap_base = 0;
   for(int i = 0; i < NVMA; i++){
     if(p->vmas[i].used)
-      fileclose(p->vmas[i].file);
+      panic("freeproc: active vma");
     memset(&p->vmas[i], 0, sizeof(p->vmas[i]));
   }
   if(p->pagetable)
@@ -289,7 +283,15 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+    uint64 newsz = sz + n;
+    uint64 limit = TRAPFRAME - PGSIZE;
+    for(int i = 0; i < NVMA; i++){
+      if(p->vmas[i].used && p->vmas[i].addr < limit)
+        limit = p->vmas[i].addr;
+    }
+    if(newsz < sz || PGROUNDUP(newsz) < newsz || PGROUNDUP(newsz) + PGSIZE > limit)
+      return -1;
+    if((sz = uvmalloc(p->pagetable, sz, newsz, PTE_W)) == 0) {
       return -1;
     }
   } else if(n < 0){

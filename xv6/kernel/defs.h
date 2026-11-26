@@ -92,6 +92,7 @@ void            proc_mapstacks(pagetable_t);
 pagetable_t     proc_pagetable(struct proc *);
 void            proc_freepagetable(pagetable_t, uint64);
 int             vm_fault(pagetable_t, uint64, int);
+int             vm_prefault(pagetable_t, uint64, uint64, int);
 int             vm_unmap(struct proc *, int, uint64, uint64);
 void            vm_unmap_all(struct proc *);
 int             kill(int);
