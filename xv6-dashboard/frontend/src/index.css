@@ -1,0 +1,32 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+
+:root {
+  font-family: 'DM Sans', Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #e8efec;
+  background: #0d1111;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+  --bg: #0d1111;
+  --panel: #141a19;
+  --line: #252e2c;
+  --muted: #84918e;
+  --dim: #596663;
+  --text: #e8efec;
+  --accent: #83e4d8;
+  --green: #70d5a9;
+  --red: #ff7e88;
+  --amber: #eec177;
+  --mono: 'DM Mono', 'JetBrains Mono', Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--bg); }
+button, input { font: inherit; }
+button { color: inherit; }
+button:focus-visible, input:focus-visible { outline: 2px solid #8debdc; outline-offset: 3px; }
+::selection { color: #091211; background: #83e4d8; }
+#root { min-height: 100vh; }

@@ -1,0 +1,27 @@
+# xv6 build artifacts
+xv6/*~
+xv6/_*
+xv6/user/_*
+xv6/**/*.o
+xv6/**/*.d
+xv6/**/*.asm
+xv6/**/*.sym
+xv6/**/*.img
+xv6/kernel/kernel
+xv6/mkfs/mkfs
+xv6/user/usys.S
+xv6/user/initcode
+xv6/user/initcode.out
+xv6/.gdbinit
+xv6/xv6.out*
+xv6/*.zip
+xv6/*.pcap
+
+# Dashboard dependencies, builds, and runtime state
+xv6-dashboard/backend/.venv/
+xv6-dashboard/backend/__pycache__/
+xv6-dashboard/backend/data/
+xv6-dashboard/frontend/node_modules/
+xv6-dashboard/frontend/dist/
+*.pyc
+.DS_Store
