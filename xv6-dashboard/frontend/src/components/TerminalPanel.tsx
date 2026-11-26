@@ -7,7 +7,7 @@ import type { TaskId } from '../api/types'
 
 type Props = { output: string[]; busy: boolean; onCommand: (command: string) => void; onClear: () => void; selected: TaskId }
 
-const QUICK_COMMANDS = ['ls', 'alarmtest', 'bigfiledemo', 'symlinktest', 'mmaptest']
+const QUICK_COMMANDS = ['verify all', 'alarmtest', 'bigfiledemo', 'symlinktest', 'mmaptest', 'ls']
 
 export default function TerminalPanel({ output, busy, onCommand, onClear, selected }: Props) {
   const container = useRef<HTMLDivElement>(null)

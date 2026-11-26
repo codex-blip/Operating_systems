@@ -2,13 +2,14 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster, toast } from 'sonner'
 import {
-  ArrowUpRight, Check, ChevronRight, Command as CommandIcon, HardDrive,
-  Cpu, GitBranch, Menu, Play, Radio, Sparkles, Square, TerminalSquare,
+  ArrowUpRight, Check, ChevronRight, Command as CommandIcon,
+  Cpu, GitBranch, Menu, Play, Radio, ShieldCheck, Sparkles, Square, TerminalSquare,
 } from 'lucide-react'
 import TaskCard from './components/TaskCard'
 import TerminalPanel from './components/TerminalPanel'
 import DiffPanel from './components/DiffPanel'
 import ExplainerPanel from './components/ExplainerPanel'
+import VerificationPanel from './components/VerificationPanel'
 import SettingsPopover from './components/SettingsPopover'
 import StatusPill from './components/StatusPill'
 import CommandPalette, { type PaletteAction } from './components/CommandPalette'
@@ -30,7 +31,7 @@ const fallbackTasks: Task[] = [
 ]
 
 type RunState = 'idle' | 'building' | 'running' | 'offline'
-type Tab = 'terminal' | 'diff' | 'explain'
+type Tab = 'proof' | 'terminal' | 'diff' | 'explain'
 
 const showError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error)
@@ -60,7 +61,7 @@ export default function App() {
   const [runningLabel, setRunningLabel] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<TaskId>('task1')
   const [selectedHero, setSelectedHero] = useState<TaskId | 'bigfiledemo'>('task1')
-  const [tab, setTab] = useState<Tab>('terminal')
+  const [tab, setTab] = useState<Tab>('proof')
   const [output, setOutput] = useState<string[]>([])
   const [demoMode, setDemoMode] = useState(false)
   const [elapsedSec, setElapsedSec] = useState(0)
@@ -204,13 +205,18 @@ export default function App() {
     if (controllerRef.current) { toast.warning('A test is already running.'); return }
     if (offline) { toast.error('Backend is offline. Start the dashboard backend first.'); return }
 
-    const activeId: TaskId | null = request.kind === 'run' ? request.task : request.kind === 'runAll' ? 'task1' : null
+    const activeId: TaskId | null =
+      request.kind === 'run' || request.kind === 'verify' ? request.task
+        : request.kind === 'runAll' || request.kind === 'verifyAll' ? 'task1'
+          : null
     setRunningTask(activeId)
     runningTaskRef.current = activeId
     setRunningLabel(
       request.kind === 'rebuild' ? (request.clean ? 'clean rebuild' : 'rebuild')
         : request.kind === 'command' ? request.command
-          : activeId || 'run-all',
+          : request.kind === 'verify' ? `verify ${request.task}`
+            : request.kind === 'verifyAll' ? 'verify all'
+              : activeId || 'run-all',
     )
 
     if (activeId) {
@@ -218,7 +224,11 @@ export default function App() {
       setSelectedHero(activeId)
       setResults((value) => ({ ...value, [activeId]: { ...createDefaultResult(activeId), status: 'running' } }))
     }
-    setTab('terminal')
+    if (request.kind === 'verify' || request.kind === 'verifyAll') {
+      setTab('proof')
+    } else if (request.kind === 'command' || request.kind === 'rebuild') {
+      setTab('terminal')
+    }
     setElapsedSec(0)
     setRunState(request.kind === 'rebuild' ? 'building' : 'running')
 
@@ -274,7 +284,8 @@ export default function App() {
   const clearTerminal = () => setOutput([])
 
   const commandAction = (action: PaletteAction) => {
-    if (action === 'all') void start({ kind: 'runAll' })
+    if (action === 'verifyAll') void start({ kind: 'verifyAll' })
+    else if (action === 'all') void start({ kind: 'runAll' })
     else if (action === 'cancel') void stop()
     else if (action === 'clear') clearTerminal()
     else if (action === 'demo') setDemoMode((value) => !value)
@@ -369,17 +380,13 @@ export default function App() {
               Periodic alarms, 65,803-block large files, symbolic links, and lazy memory-mapped files — tested live in QEMU.
             </p>
             <div className="hero-buttons">
-              <button className="hero-run" onClick={() => void start({ kind: 'runAll' })} disabled={active}>
-                <Play size={14} fill="currentColor" />
-                {active ? 'Tests running…' : 'Run all tests'}
+              <button className="hero-run" onClick={() => void start({ kind: 'verifyAll' })} disabled={active}>
+                <ShieldCheck size={15} />
+                {active ? 'Running verification…' : 'Verify all visually (~6s)'}
                 <ChevronRight size={15} />
               </button>
-              <button
-                className="hero-demo"
-                onClick={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }}
-                disabled={active}
-              >
-                <HardDrive size={14} /> Quick file demo
+              <button className="hero-demo" onClick={() => void start({ kind: 'runAll' })} disabled={active}>
+                <Play size={13} fill="currentColor" /> Full MIT test suites
               </button>
               {active && (
                 <button className="hero-stop" onClick={() => void stop()}>
@@ -444,8 +451,9 @@ export default function App() {
                     selected={selectedTask === task.id}
                     running={active && currentRunningTask === task.id}
                     busy={active}
+                    onVerify={() => void start({ kind: 'verify', task: task.id })}
                     onRun={() => void start({ kind: 'run', task: task.id })}
-                    onSelect={() => { setSelectedHero(task.id); setSelectedTask(task.id) }}
+                    onSelect={() => { setSelectedHero(task.id); setSelectedTask(task.id); setTab('proof') }}
                   />
                 </motion.div>
               ))}
@@ -484,6 +492,9 @@ export default function App() {
           <div className="workspace-grid">
             <div className="workspace-main">
               <div className="workspace-tabs" role="tablist" aria-label="Workspace panels">
+                <button className={tab === 'proof' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'proof'} onClick={() => setTab('proof')}>
+                  <ShieldCheck size={15} />Visual proof
+                </button>
                 <button className={tab === 'terminal' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'terminal'} onClick={() => setTab('terminal')}>
                   <TerminalSquare size={15} />Terminal{output.length > 0 && <span className="tab-count">LIVE</span>}
                 </button>
@@ -491,7 +502,7 @@ export default function App() {
                   <GitBranch size={15} />Diff
                 </button>
                 <button className={tab === 'explain' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'explain'} onClick={() => setTab('explain')}>
-                  <Sparkles size={15} />How it works
+                  <Sparkles size={15} />Interactive model
                 </button>
                 <div className="tab-spacer" />
                 <span className="selected-module">{selectedTask}</span>
@@ -499,18 +510,29 @@ export default function App() {
 
               <AnimatePresence mode="wait">
                 <motion.div
-                  key={tab}
+                  key={`${tab}-${tab === 'proof' ? selectedTask : 'panel'}`}
                   className={`workspace-panel ${tab === 'terminal' ? 'terminal-workspace' : ''}`}
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
                   transition={{ duration: 0.14 }}
                 >
-                  {tab === 'terminal'
-                    ? <TerminalPanel output={output} busy={active} onCommand={(command) => void start({ kind: 'command', command })} onClear={clearTerminal} selected={selectedTask} />
-                    : tab === 'diff'
-                      ? <DiffPanel task={selectedTask} client={client} />
-                      : <ExplainerPanel task={selectedTask} />}
+                  {tab === 'proof' ? (
+                    <VerificationPanel
+                      task={selectedTask}
+                      result={results[selectedTask] || createDefaultResult(selectedTask)}
+                      busy={active}
+                      runningThis={active && currentRunningTask === selectedTask}
+                      onVerify={() => void start({ kind: 'verify', task: selectedTask })}
+                      onRunSuite={() => void start({ kind: 'run', task: selectedTask })}
+                    />
+                  ) : tab === 'terminal' ? (
+                    <TerminalPanel output={output} busy={active} onCommand={(command) => void start({ kind: 'command', command })} onClear={clearTerminal} selected={selectedTask} />
+                  ) : tab === 'diff' ? (
+                    <DiffPanel task={selectedTask} client={client} />
+                  ) : (
+                    <ExplainerPanel task={selectedTask} />
+                  )}
                 </motion.div>
               </AnimatePresence>
 
@@ -534,6 +556,7 @@ export default function App() {
                 state={reportedState}
                 current={currentRunningTask}
                 results={results}
+                onVerifyAll={() => void start({ kind: 'verifyAll' })}
                 onRunAll={() => void start({ kind: 'runAll' })}
                 onCancel={() => void stop()}
                 onRebuild={(clean) => void start({ kind: 'rebuild', clean })}

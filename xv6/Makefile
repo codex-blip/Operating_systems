@@ -196,6 +196,7 @@ UPROGS=\
 	$U/_bigfiledemo\
 	$U/_symlinktest\
 	$U/_mmaptest\
+	$U/_verify\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\

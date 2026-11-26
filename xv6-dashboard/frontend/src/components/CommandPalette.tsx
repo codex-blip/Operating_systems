@@ -4,10 +4,11 @@ import { useHotkeys } from '../hooks/useHotkeys'
 import { Ban, Eraser, FlaskConical, HardDrive, Layers3, Play, Presentation, RefreshCw } from 'lucide-react'
 import type { TaskId } from '../api/types'
 
-export type PaletteAction = 'all' | TaskId | 'cancel' | 'clear' | 'demo' | 'rebuild' | 'usertests' | 'bigfiledemo'
+export type PaletteAction = 'verifyAll' | 'all' | TaskId | 'cancel' | 'clear' | 'demo' | 'rebuild' | 'usertests' | 'bigfiledemo'
 
 const tasks: { id: PaletteAction; label: string; hint: string }[] = [
-  { id: 'all', label: 'Run all project tasks', hint: 'Task 1 → Task 3' },
+  { id: 'verifyAll', label: 'Verify all tasks visually (+ edge cases)', hint: '~6s · live proof' },
+  { id: 'all', label: 'Run all official MIT suites', hint: 'Task 1 → Task 3' },
   { id: 'task1', label: 'Run Task 1 · Periodic Alarms', hint: 'alarmtest' },
   { id: 'task2a', label: 'Run Task 2A · Large Files', hint: 'bigfile' },
   { id: 'bigfiledemo', label: 'Run quick large-file demo', hint: '512 blocks · bigfiledemo' },

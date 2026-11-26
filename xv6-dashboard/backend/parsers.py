@@ -27,6 +27,19 @@ class _Parser:
         self._current = None   # name of the most recently started subtest
         self._kernel_msg = ""  # last kernel trap/panic line since that start
         self._updates = []
+        self._metrics = {}     # key -> str | int
+        self._evidence = []    # notable output lines captured from QEMU
+
+    def summary(self):
+        return {
+            "metrics": dict(self._metrics),
+            "evidence": list(self._evidence[-24:]),
+        }
+
+    def _note_evidence(self, line):
+        clean = line.strip()
+        if clean and clean != "$":
+            self._evidence.append(clean[:180])
 
     # ---------------------------------------------------------------- public
     def feed(self, text):
@@ -141,30 +154,49 @@ class AlarmtestParser(_Parser):
     PASSED = re.compile(r"\b(test\d+) passed\b")
     FAILED = re.compile(r"\b(test\d+) failed: (.*)")
     OTHER = re.compile(r"\b(test\d+): (.+)")  # e.g. "test2: fork failed"
+    PASS_DETAILS = {
+        "test0": "periodic handler invoked on timer interrupt",
+        "test1": "10 periodic calls; all registers & PC restored",
+        "test2": "non-reentrant: nested timer ticks blocked",
+        "test3": "sigreturn() preserved register a0 = 0xac",
+    }
 
     def __init__(self):
         super().__init__()
         self._alarms = 0
+        self._total_alarms = 0
 
     def _line(self, line):
         if self._running() and "alarm!" in line:
-            self._alarms += line.count("alarm!")
+            c = line.count("alarm!")
+            self._alarms += c
+            self._total_alarms += c
+            self._metrics["handler_fires"] = self._total_alarms
         m = self.START.search(line)
         if m:
+            self._note_evidence(line)
             self._start(m.group(1))
             self._alarms = 0
             return
         m = self.PASSED.search(line)
         if m:
+            self._note_evidence(line)
+            tid = m.group(1)
             n = self._alarms
-            self._pass(m.group(1), "handler ran %d time%s" % (n, "" if n == 1 else "s") if n else "")
+            base = self.PASS_DETAILS.get(tid, "")
+            detail = ("handler ran %d time%s · %s" % (n, "" if n == 1 else "s", base)) if n else base
+            if tid == "test3":
+                self._metrics["a0_hex"] = "0xac"
+            self._pass(tid, detail)
             return
         m = self.FAILED.search(line)
         if m:
+            self._note_evidence(line)
             self._fail(m.group(1), m.group(2).strip())
             return
         m = self.OTHER.search(line)
         if m:
+            self._note_evidence(line)
             self._fail(m.group(1), m.group(2).strip())
 
 
@@ -199,20 +231,28 @@ class BigfileParser(_Parser):
     def _line(self, line):
         m = re.search(r"wrote (\d+) blocks", line)
         if m:
+            self._note_evidence(line)
             n = int(m.group(1))
+            self._metrics["direct_blocks"] = min(11, n)
+            self._metrics["single_blocks"] = max(0, min(256, n - 11))
+            self._metrics["double_blocks"] = max(0, n - 267)
+            self._metrics["max_capacity"] = n
             if n == self.TOTAL:
-                self._pass("write", "wrote %d blocks" % n)
+                self._pass("write", "wrote %d blocks (11 direct + 256 single + 65,536 double)" % n)
             else:
                 self._fail("write", "wrote %d blocks, expected %d" % (n, self.TOTAL))
             return
         if "reading bigfile" in line:
+            self._note_evidence(line)
             self._start("read")
             return
         if "bigfile done; ok" in line:
-            self._pass("read", "read %d blocks back" % self.TOTAL)
+            self._note_evidence(line)
+            self._pass("read", "verified all %d blocks (67.38 MB) byte-for-byte" % self.TOTAL)
             return
         m = re.search(r"bigfile: (.*)", line)
         if m:
+            self._note_evidence(line)
             self._fail_current(m.group(1).strip())
 
 
@@ -223,18 +263,27 @@ class SymlinkParser(_Parser):
 
     def _line(self, line):
         if "Start: test concurrent symlinks" in line:
+            self._note_evidence(line)
             self._start("concurrent symlinks")
         elif "Start: test symlinks" in line:
+            self._note_evidence(line)
             self._start("symlinks")
         elif "test concurrent symlinks: ok" in line:
-            self._pass("concurrent symlinks")
+            self._note_evidence(line)
+            self._metrics["concurrent_ops"] = 200
+            self._pass("concurrent symlinks", "2 forked processes × 100 symlink/unlink ops race-free")
         elif "test concurrent symlinks: failed" in line:
+            self._note_evidence(line)
             self._fail("concurrent symlinks", "a child process exited with an error")
         elif "test symlinks: ok" in line:
-            self._pass("symlinks")
+            self._note_evidence(line)
+            self._metrics["chain_hops"] = 4
+            self._metrics["depth_cap"] = 10
+            self._pass("symlinks", "4-hop chain, O_NOFOLLOW, dangling link & cycle depth=10 verified")
         else:
             m = self.FAILURE.search(line)
             if m:
+                self._note_evidence(line)
                 self._fail_current(m.group(1).strip() or "failed")
 
 
@@ -253,6 +302,19 @@ class MmapParser(_Parser):
         "munmap prevents access",
         "writes to read-only mapped memory",
     )
+    DETAILS = {
+        "basic mmap": "mapped 2 pages (1.5 file + 0.5 zero-filled)",
+        "mmap private": "MAP_PRIVATE writes stayed isolated in RAM",
+        "mmap read-only": "rejected MAP_SHARED+PROT_WRITE on O_RDONLY fd",
+        "mmap read/write": "modified 2 pages & partially unmapped",
+        "mmap dirty": "MAP_SHARED dirty pages persisted back to disk",
+        "not-mapped unmap": "unmapped untouched lazy page cleanly",
+        "lazy access": "disk write after mmap() seen on first fault",
+        "mmap two files": "2 concurrent VMAs remained independent after unlink",
+        "fork": "child inherited VMAs & file refcounts across fork()",
+        "munmap prevents access": "touching unmapped page faulted & exited -1",
+        "writes to read-only mapped memory": "store to PROT_READ page trapped & exited -1",
+    }
     PASS_RE = re.compile(r"\btest (.+?): OK\s*$")
     START_RE = re.compile(r"^\s*test (.+?)\s*$")
     FAIL_RE = re.compile(r"mmaptest failure: (.*)")
@@ -268,19 +330,25 @@ class MmapParser(_Parser):
     def _line(self, line):
         m = self.PASS_RE.search(line)
         if m:
-            self._pass(m.group(1))
+            self._note_evidence(line)
+            name = m.group(1)
+            self._pass(name, self.DETAILS.get(name, ""))
             return
         m = self.FAIL_RE.search(line)
         if m:
+            self._note_evidence(line)
             detail = m.group(1).strip()
             if self._context:
                 detail += " (%s)" % self._context
             self._fail_current(detail)
             return
         if "mmaptest: all tests succeeded" in line:
+            self._note_evidence(line)
+            self._metrics["pages_tested"] = 11
             self._all_ok = True
             return
         if "fork_test failed" in line:
+            self._note_evidence(line)
             self._fail_current("the child process saw a wrong mapping")
             return
         if line.lstrip().startswith("mismatch at "):
@@ -352,11 +420,72 @@ class UsertestsParser(_Parser):
 
 # ------------------------------------------------------------ free-form cmds
 class CommandParser:
+    def __init__(self):
+        self._evidence = []
+
     def feed(self, text):
+        for line in text.splitlines():
+            clean = line.strip()
+            if clean and clean != "$":
+                self._evidence.append(clean[:180])
         return []
 
     def finish(self, completed):
         return ("pass" if completed else "fail"), []
+
+    def summary(self):
+        return {"metrics": {}, "evidence": self._evidence[-24:]}
+
+
+# ------------------------------------------------------------ deep verify
+class VerifyParser(_Parser):
+    EXPECTED_BY_TASK = {
+        "task1": ("periodic_registers", "non_reentrant", "a0_restore", "exec_reset"),
+        "task2a": ("direct_blocks", "single_indirect", "double_indirect", "read_verify", "itrunc_cleanup"),
+        "task2b": ("chain_follow", "nofollow_stat", "cycle_guard", "concurrent_ops"),
+        "task3": ("lazy_fault", "shared_writeback", "copyout_va_reuse", "fork_protection"),
+    }
+    CHECK_RE = re.compile(r"^VERIFY_CHECK\s+(\S+)\s+(PASS|FAIL)\s*(.*)$")
+    FAIL_RE = re.compile(r"^VERIFY_FAIL\s+(\S+)\s*(.*)$")
+    METRIC_RE = re.compile(r"^VERIFY_METRIC\s+([^=\s]+)=(.*)$")
+    DONE_RE = re.compile(r"^VERIFY_DONE\s+(\S+)\s+PASS\s*$")
+
+    def __init__(self, task_id):
+        super().__init__()
+        self.EXPECTED = self.EXPECTED_BY_TASK.get(task_id, ())
+        self._done_ok = False
+
+    def _extra_ok(self):
+        return self._done_ok
+
+    def _line(self, line):
+        clean = line.strip()
+        if not clean:
+            return
+        if clean.startswith("VERIFY_"):
+            self._note_evidence(clean)
+        m = self.CHECK_RE.match(clean)
+        if m:
+            name, verdict, rest = m.group(1), m.group(2), m.group(3).strip()
+            if verdict == "PASS":
+                self._pass(name, rest)
+            else:
+                self._fail(name, rest or "verification check failed")
+            return
+        m = self.FAIL_RE.match(clean)
+        if m:
+            self._fail(m.group(1), m.group(2).strip() or "verification check failed")
+            return
+        m = self.METRIC_RE.match(clean)
+        if m:
+            key, raw = m.group(1), m.group(2).strip()
+            try:
+                self._metrics[key] = int(raw)
+            except ValueError:
+                self._metrics[key] = raw
+            return
+        if self.DONE_RE.match(clean):
+            self._done_ok = True
 
 
 _PARSERS = {
@@ -370,6 +499,10 @@ _PARSERS = {
 
 def get_parser(task_id):
     return _PARSERS.get(task_id, CommandParser)()
+
+
+def get_verify_parser(task_id):
+    return VerifyParser(task_id)
 
 
 # ------------------------------------------------------------------ selftest

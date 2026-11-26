@@ -32,7 +32,9 @@ export function makeClient(settings: RuntimeSettings): DashboardClient {
     stream: async (request: StreamRequest, onEvent: ApiEventHandler, signal: AbortSignal) => {
       const endpoint = request.kind === 'run' ? `/run/${request.task}`
         : request.kind === 'runAll' ? '/run-all'
-          : request.kind === 'rebuild' ? '/rebuild' : '/command'
+          : request.kind === 'verify' ? `/verify/${request.task}`
+            : request.kind === 'verifyAll' ? '/verify-all'
+              : request.kind === 'rebuild' ? '/rebuild' : '/command'
       const body = request.kind === 'command' ? { command: request.command }
         : request.kind === 'rebuild' ? { clean: request.clean } : {}
       let terminal = false

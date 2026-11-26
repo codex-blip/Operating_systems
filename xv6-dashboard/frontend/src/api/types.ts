@@ -7,6 +7,9 @@ export type Result = {
   duration: number
   subtests: Subtest[]
   finished_at: string
+  metrics?: Record<string, string | number>
+  evidence?: string[]
+  mode?: 'suite' | 'verify'
 }
 export type Task = {
   id: TaskId
@@ -47,6 +50,8 @@ export type StreamEvent =
 export type StreamRequest =
   | { kind: 'run'; task: TaskId }
   | { kind: 'runAll' }
+  | { kind: 'verify'; task: TaskId }
+  | { kind: 'verifyAll' }
   | { kind: 'command'; command: string }
   | { kind: 'rebuild'; clean: boolean }
 

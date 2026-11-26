@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Ban, Check, Circle, Clock3, HardDrive, Play, RefreshCw } from 'lucide-react'
+import { Ban, Check, Circle, Clock3, HardDrive, Play, RefreshCw, ShieldCheck } from 'lucide-react'
 import type { HistoryItem, TaskId, TaskStatus } from '../api/types'
 import StatusPill from './StatusPill'
 
@@ -11,11 +11,12 @@ const sequence: { id: TaskId; label: string }[] = [
   { id: 'task3', label: 'mmap' },
 ]
 
-export function RunControls({ busy, state, current, results, onRunAll, onCancel, onRebuild, onRunBigfileDemo, demoMode }: {
+export function RunControls({ busy, state, current, results, onVerifyAll, onRunAll, onCancel, onRebuild, onRunBigfileDemo, demoMode }: {
   busy: boolean
   state: string
   current: string | null
   results: Record<string, { status: TaskStatus }>
+  onVerifyAll: () => void
   onRunAll: () => void
   onCancel: () => void
   onRebuild: (clean: boolean) => void
@@ -34,10 +35,18 @@ export function RunControls({ busy, state, current, results, onRunAll, onCancel,
         <StatusPill status={busy ? (state === 'building' ? 'building' : 'running') : 'idle'} />
       </div>
 
-      <button className="primary-action" onClick={onRunAll} disabled={busy}>
+      <button className="primary-action" onClick={onVerifyAll} disabled={busy}>
+        <ShieldCheck size={15} />
+        Verify all visually
+        <span>~6s</span>
+      </button>
+
+      <button className="bigfile-demo-action" onClick={onRunAll} disabled={busy}>
         <Play size={14} fill="currentColor" />
-        Run all project tasks
-        <span>4 tests</span>
+        <span>
+          <strong>Run full MIT suites</strong>
+          <small>alarm · bigfile · symlink · mmap</small>
+        </span>
       </button>
 
       <button className="bigfile-demo-action" onClick={onRunBigfileDemo} disabled={busy}>

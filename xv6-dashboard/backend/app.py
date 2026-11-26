@@ -53,14 +53,22 @@ def new_run_id():
     return datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
 
 
-def make_result(task, status, duration, subtests):
-    return {
+def make_result(task, status, duration, subtests, extra=None):
+    res = {
         "task": task,
         "status": status,
         "duration": round(float(duration), 1),
         "subtests": list(subtests),
         "finished_at": now_iso(),
     }
+    if extra:
+        if extra.get("metrics"):
+            res["metrics"] = dict(extra["metrics"])
+        if extra.get("evidence"):
+            res["evidence"] = list(extra["evidence"])
+        if extra.get("mode"):
+            res["mode"] = extra["mode"]
+    return res
 
 
 def error_event(code, message):
@@ -315,6 +323,7 @@ def run_in_qemu(run, command, timeout, parser):
         MANAGER.set_qemu(False)
 
     parser_status, subtests = parser.finish(outcome == "prompt")
+    extra = parser.summary() if hasattr(parser, "summary") else {}
     status = {
         "prompt": parser_status,
         "timeout": "timeout",
@@ -323,7 +332,7 @@ def run_in_qemu(run, command, timeout, parser):
         "eof": "error",
     }[outcome]
     error = ("qemu_failed", "QEMU exited while the command was running") if outcome == "eof" else None
-    return {"status": status, "subtests": subtests, "duration": duration, "error": error}
+    return {"status": status, "subtests": subtests, "duration": duration, "error": error, "extra": extra}
 
 
 def single_task_worker(task_id):
@@ -344,13 +353,105 @@ def single_task_worker(task_id):
                 return build_error(reason)
 
         out = run_in_qemu(run, task["command"], task["timeout"], parsers.get_parser(task_id))
-        result = make_result(task_id, out["status"], out["duration"], out["subtests"])
+        extra = dict(out.get("extra") or {}, mode="suite")
+        result = make_result(task_id, out["status"], out["duration"], out["subtests"], extra)
         record(run.run_id, task_id, started_at, result)
         if out["error"]:
             return error_event(*out["error"])
         return {"type": "finished", "run_id": run.run_id, "task": task_id, "result": result}
 
     return worker
+
+
+def verify_task_worker(task_id):
+    cmd = "verify %s" % task_id
+
+    def worker(run):
+        started_at = now_iso()
+        run.emit({"type": "started", "run_id": run.run_id, "task": task_id,
+                  "command": cmd, "ts": started_at})
+        if config.BUILD_BEFORE_RUN:
+            ok, reason = build(run, [build_args()])
+            if not ok:
+                if reason == "cancelled":
+                    result = make_result(task_id, "cancelled", 0.0, [], {"mode": "verify"})
+                    record(run.run_id, task_id, started_at, result)
+                    return {"type": "finished", "run_id": run.run_id, "task": task_id, "result": result}
+                record(run.run_id, task_id, started_at, make_result(task_id, "error", 0.0, [], {"mode": "verify"}))
+                return build_error(reason)
+
+        out = run_in_qemu(run, cmd, 90, parsers.get_verify_parser(task_id))
+        extra = dict(out.get("extra") or {}, mode="verify")
+        result = make_result(task_id, out["status"], out["duration"], out["subtests"], extra)
+        record(run.run_id, task_id, started_at, result)
+        if out["error"]:
+            return error_event(*out["error"])
+        return {"type": "finished", "run_id": run.run_id, "task": task_id, "result": result}
+
+    return worker
+
+
+def verify_all_worker(run):
+    run.emit({"type": "started", "run_id": run.run_id, "task": "all",
+              "command": "verify task1..task3", "ts": now_iso()})
+    if config.BUILD_BEFORE_RUN:
+        ok, reason = build(run, [build_args()])
+        if not ok:
+            if reason == "cancelled":
+                return {"type": "all_finished", "results": {}}
+            return build_error(reason)
+
+    results = {}
+    session = qemu_runner.QemuSession(lambda text: run.emit({"type": "output", "data": text}))
+    try:
+        try:
+            session.start()
+        except Exception as exc:
+            msg = "could not start QEMU: %s" % exc
+            notice(run, msg)
+            return error_event("qemu_failed", msg)
+        MANAGER.set_qemu(True)
+        boot = session.wait_for_prompt(run.cancel, config.BOOT_TIMEOUT)
+        if boot == "cancelled":
+            return {"type": "all_finished", "results": {}}
+        if boot != "prompt":
+            code, msg = BOOT_FAILURES[boot]
+            notice(run, msg)
+            return error_event(code, msg)
+
+        for task_id in config.RUN_ALL_ORDER:
+            if run.cancel.is_set():
+                break
+            MANAGER.set_task(task_id)
+            run.emit({"type": "task_started", "task": task_id})
+            started_at = now_iso()
+            parser = parsers.get_verify_parser(task_id)
+
+            def on_text(text, p=parser):
+                for st in p.feed(text):
+                    run.emit({"type": "subtest", "name": st["name"], "status": st["status"],
+                              "detail": st.get("detail", "")})
+
+            t0 = time.monotonic()
+            outcome = session.run_command("verify %s" % task_id, run.cancel, 90, on_text)
+            duration = time.monotonic() - t0
+            p_status, subtests = parser.finish(outcome == "prompt")
+            status = {
+                "prompt": p_status, "timeout": "timeout", "cancelled": "cancelled",
+                "panic": "fail", "eof": "error",
+            }[outcome]
+            extra = dict(parser.summary(), mode="verify")
+            result = make_result(task_id, status, duration, subtests, extra)
+            record("%s-%s" % (run.run_id, task_id), task_id, started_at, result)
+            results[task_id] = result
+            run.emit({"type": "task_finished", "task": task_id, "status": result["status"],
+                      "duration": result["duration"], "result": result})
+            if outcome != "prompt":
+                break
+    finally:
+        session.close()
+        MANAGER.set_qemu(False)
+    return {"type": "all_finished", "results": results}
 
 
 def run_all_worker(run):
@@ -373,7 +474,8 @@ def run_all_worker(run):
         run.emit({"type": "task_started", "task": task_id})
         started_at = now_iso()
         out = run_in_qemu(run, task["command"], task["timeout"], parsers.get_parser(task_id))
-        result = make_result(task_id, out["status"], out["duration"], out["subtests"])
+        extra = dict(out.get("extra") or {}, mode="suite")
+        result = make_result(task_id, out["status"], out["duration"], out["subtests"], extra)
         record("%s-%s" % (run.run_id, task_id), task_id, started_at, result)
         results[task_id] = result
         run.emit({"type": "task_finished", "task": task_id, "status": result["status"],
@@ -505,6 +607,18 @@ def run_task(task):
 @app.route("/api/run-all", methods=["POST"])
 def run_all():
     return start_stream(config.RUN_ALL_ORDER[0], run_all_worker)
+
+
+@app.route("/api/verify/<task>", methods=["POST"])
+def verify_task(task):
+    if task not in config.RUN_ALL_ORDER:
+        return api_error("bad_request", "unknown verify task '%s' (use task1, task2a, task2b, task3)" % task, 404)
+    return start_stream(task, verify_task_worker(task))
+
+
+@app.route("/api/verify-all", methods=["POST"])
+def verify_all():
+    return start_stream(config.RUN_ALL_ORDER[0], verify_all_worker)
 
 
 @app.route("/api/command", methods=["POST"])
