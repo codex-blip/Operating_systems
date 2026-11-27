@@ -16,6 +16,8 @@ if [[ ! -f "$XV6_PATH/Makefile" ]]; then
 fi
 
 export XV6_PATH
+PORT="${PORT:-5000}"
+export PORT
 
 if [[ -x "$BACKEND_DIR/.venv/bin/python" ]]; then
   PYTHON="$BACKEND_DIR/.venv/bin/python"

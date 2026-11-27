@@ -11,13 +11,13 @@ const sequence: { id: TaskId; label: string }[] = [
   { id: 'task3', label: 'mmap' },
 ]
 
-export function RunControls({ busy, state, current, results, onVerifyAll, onRunAll, onCancel, onRebuild, onRunBigfileDemo, demoMode }: {
+export function RunControls({ busy, state, current, results, onRunAll, onOpenVerify, onCancel, onRebuild, onRunBigfileDemo, demoMode }: {
   busy: boolean
   state: string
   current: string | null
   results: Record<string, { status: TaskStatus }>
-  onVerifyAll: () => void
   onRunAll: () => void
+  onOpenVerify: () => void
   onCancel: () => void
   onRebuild: (clean: boolean) => void
   onRunBigfileDemo: () => void
@@ -35,27 +35,27 @@ export function RunControls({ busy, state, current, results, onVerifyAll, onRunA
         <StatusPill status={busy ? (state === 'building' ? 'building' : 'running') : 'idle'} />
       </div>
 
-      <button className="primary-action" onClick={onVerifyAll} disabled={busy}>
-        <ShieldCheck size={15} />
-        Verify all visually
-        <span>~6s</span>
-      </button>
-
-      <button className="bigfile-demo-action" onClick={onRunAll} disabled={busy}>
+      <button className="primary-action" onClick={onRunAll} disabled={busy}>
         <Play size={14} fill="currentColor" />
-        <span>
-          <strong>Run full MIT suites</strong>
-          <small>alarm · bigfile · symlink · mmap</small>
-        </span>
+        Run all tasks
+        <span>1 → 3</span>
       </button>
 
       <button className="bigfile-demo-action" onClick={onRunBigfileDemo} disabled={busy}>
         <HardDrive size={15} />
         <span>
-          <strong>Large-file demo</strong>
-          <small>512 blocks · ~2s verify</small>
+          <strong>Large-file quick demo</strong>
+          <small>512 blocks · ~2s</small>
         </span>
         <Play size={12} fill="currentColor" />
+      </button>
+
+      <button className="bigfile-demo-action" onClick={onOpenVerify}>
+        <ShieldCheck size={15} />
+        <span>
+          <strong>Visual verification</strong>
+          <small>Simple explanation &amp; proof</small>
+        </span>
       </button>
 
       <div className="control-pair">

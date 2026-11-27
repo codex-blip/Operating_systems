@@ -31,7 +31,8 @@ const fallbackTasks: Task[] = [
 ]
 
 type RunState = 'idle' | 'building' | 'running' | 'offline'
-type Tab = 'proof' | 'terminal' | 'diff' | 'explain'
+type Tab = 'terminal' | 'proof' | 'diff' | 'explain'
+type VerifyTaskId = Exclude<TaskId, 'usertests'>
 
 const showError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error)
@@ -51,6 +52,7 @@ export default function App() {
   const client = useMemo(() => makeClient(settings), [settings])
   const [tasks, setTasks] = useState<Task[]>(fallbackTasks)
   const [results, setResults] = useState<Record<string, Result>>({})
+  const [verifyResults, setVerifyResults] = useState<Record<string, Result>>({})
   const [history, setHistory] = useState<HistoryItem[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [serverStatus, setServerStatus] = useState<BackendStatus>({ state: 'idle', current_task: null, run_id: null, last_results: {} })
@@ -58,15 +60,18 @@ export default function App() {
   const [offline, setOffline] = useState(false)
   const [loading, setLoading] = useState(true)
   const [runningTask, setRunningTask] = useState<TaskId | null>(null)
+  const [runningMode, setRunningMode] = useState<'suite' | 'verify' | null>(null)
   const [runningLabel, setRunningLabel] = useState<string | null>(null)
   const [selectedTask, setSelectedTask] = useState<TaskId>('task1')
   const [selectedHero, setSelectedHero] = useState<TaskId | 'bigfiledemo'>('task1')
-  const [tab, setTab] = useState<Tab>('proof')
+  const [tab, setTab] = useState<Tab>('terminal')
   const [output, setOutput] = useState<string[]>([])
   const [demoMode, setDemoMode] = useState(false)
   const [elapsedSec, setElapsedSec] = useState(0)
   const controllerRef = useRef<AbortController | null>(null)
   const runningTaskRef = useRef<TaskId | null>(null)
+  const activeModeRef = useRef<'suite' | 'verify' | null>(null)
+  const workspaceRef = useRef<HTMLElement | null>(null)
 
   const refresh = useCallback(async (initial = false) => {
     try {
@@ -74,8 +79,22 @@ export default function App() {
       setTasks(nextTasks)
       setServerStatus(status)
       setHistory(nextHistory)
+
+      const suiteFromServer: Record<string, Result> = {}
+      const verifyFromServer: Record<string, Result> = {}
+      Object.entries(status.last_results || {}).forEach(([tid, res]) => {
+        if (res.mode === 'verify') verifyFromServer[tid] = res
+        else suiteFromServer[tid] = res
+      })
+
       setResults((current) => ({
-        ...status.last_results,
+        ...current,
+        ...suiteFromServer,
+        ...Object.fromEntries(Object.entries(current).filter(([, result]) => result.status === 'running')),
+      }))
+      setVerifyResults((current) => ({
+        ...current,
+        ...verifyFromServer,
         ...Object.fromEntries(Object.entries(current).filter(([, result]) => result.status === 'running')),
       }))
       setOffline(false)
@@ -121,15 +140,42 @@ export default function App() {
   const append = (text: string) => setOutput((value) => [...value.slice(-1300), text])
 
   const updateResult = (task: string, result: Result) => {
-    setResults((value) => ({ ...value, [task]: result }))
+    const isVerify = result.mode === 'verify' || activeModeRef.current === 'verify'
+    if (isVerify) {
+      setVerifyResults((value) => ({ ...value, [task]: { ...result, mode: 'verify' } }))
+    } else {
+      setResults((value) => ({ ...value, [task]: { ...result, mode: 'suite' } }))
+    }
     setHistory((value) => [{
-      run_id: `ui-${Date.now()}`, task, status: result.status, duration: result.duration, started_at: result.finished_at,
+      run_id: `ui-${Date.now()}`, task: isVerify ? `verify ${task}` : task, status: result.status, duration: result.duration, started_at: result.finished_at,
       passed: result.subtests.filter((test) => test.status === 'pass').length, total: result.subtests.length,
     }, ...value].slice(0, 100))
   }
 
   function isTask(value: string): value is TaskId {
     return fallbackTasks.some((task) => task.id === value)
+  }
+
+  const openVerifyTab = (task?: VerifyTaskId) => {
+    if (task) {
+      setSelectedTask(task)
+      setSelectedHero(task)
+    } else if (selectedTask === 'usertests') {
+      setSelectedTask('task1')
+      setSelectedHero('task1')
+    }
+    setTab('proof')
+    workspaceRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const clearRunFlags = () => {
+    setRunState('idle')
+    setRunningTask(null)
+    setRunningMode(null)
+    runningTaskRef.current = null
+    activeModeRef.current = null
+    setRunningLabel(null)
+    controllerRef.current = null
   }
 
   const handleEvent = (event: StreamEvent) => {
@@ -145,16 +191,21 @@ export default function App() {
       if (isTask(task)) {
         setRunningTask(task)
         runningTaskRef.current = task
-        setRunningLabel(task)
+        setRunningLabel(activeModeRef.current === 'verify' ? `verify ${task}` : task)
         setSelectedTask(task)
         setSelectedHero(task)
-        setResults((value) => ({ ...value, [task]: { ...createDefaultResult(task), status: 'running' } }))
+        if (activeModeRef.current === 'verify') {
+          setVerifyResults((value) => ({ ...value, [task]: { ...createDefaultResult(task), status: 'running', mode: 'verify' } }))
+        } else {
+          setResults((value) => ({ ...value, [task]: { ...createDefaultResult(task), status: 'running', mode: 'suite' } }))
+        }
         setRunState('running')
       }
     } else if (event.type === 'subtest') {
       const task = runningTaskRef.current
       if (!task) return
-      setResults((value) => {
+      const setter = activeModeRef.current === 'verify' ? setVerifyResults : setResults
+      setter((value) => {
         const prior = value[task] || createDefaultResult(task)
         return {
           ...value,
@@ -172,30 +223,24 @@ export default function App() {
       updateResult(event.task, event.result)
     } else if (event.type === 'finished') {
       updateResult(event.task, event.result)
-      toast[event.result.status === 'pass' ? 'success' : 'error'](`${event.task}: ${event.result.status}`, { description: `${event.result.duration.toFixed(1)} seconds` })
-      setRunState('idle')
-      setRunningTask(null)
-      runningTaskRef.current = null
-      setRunningLabel(null)
+      const label = activeModeRef.current === 'verify' ? `Verified ${event.task}` : event.task
+      toast[event.result.status === 'pass' ? 'success' : 'error'](`${label}: ${event.result.status}`, { description: `${event.result.duration.toFixed(1)} seconds` })
+      clearRunFlags()
       setServerStatus((value) => ({ ...value, state: 'idle', current_task: null, run_id: null }))
-      controllerRef.current = null
     } else if (event.type === 'all_finished') {
       Object.entries(event.results).forEach(([task, result]) => updateResult(task, result))
-      setRunState('idle')
-      setRunningTask(null)
-      runningTaskRef.current = null
-      setRunningLabel(null)
+      const wasVerify = activeModeRef.current === 'verify'
+      clearRunFlags()
       setServerStatus((value) => ({ ...value, state: 'idle', current_task: null, run_id: null }))
-      controllerRef.current = null
       const failures = Object.values(event.results).filter((result) => result.status !== 'pass').length
-      toast[failures ? 'error' : 'success'](failures ? `${failures} task${failures === 1 ? '' : 's'} need attention` : 'All project tasks passed')
+      toast[failures ? 'error' : 'success'](
+        failures
+          ? `${failures} task${failures === 1 ? '' : 's'} need attention`
+          : wasVerify ? 'All 4 tasks verified!' : 'All 4 tasks passed',
+      )
     } else if (event.type === 'error') {
       append(`\r\n\x1b[31m${event.code}: ${event.message}\x1b[0m\r\n`)
-      setRunState('idle')
-      setRunningTask(null)
-      runningTaskRef.current = null
-      setRunningLabel(null)
-      controllerRef.current = null
+      clearRunFlags()
       toast.error(event.code === 'busy' ? 'Another run is already active' : event.message)
       void refresh()
     }
@@ -205,10 +250,15 @@ export default function App() {
     if (controllerRef.current) { toast.warning('A test is already running.'); return }
     if (offline) { toast.error('Backend is offline. Start the dashboard backend first.'); return }
 
+    const isVerify = request.kind === 'verify' || request.kind === 'verifyAll'
+    const mode: 'suite' | 'verify' = isVerify ? 'verify' : 'suite'
     const activeId: TaskId | null =
       request.kind === 'run' || request.kind === 'verify' ? request.task
         : request.kind === 'runAll' || request.kind === 'verifyAll' ? 'task1'
           : null
+
+    activeModeRef.current = mode
+    setRunningMode(mode)
     setRunningTask(activeId)
     runningTaskRef.current = activeId
     setRunningLabel(
@@ -222,11 +272,16 @@ export default function App() {
     if (activeId) {
       setSelectedTask(activeId)
       setSelectedHero(activeId)
-      setResults((value) => ({ ...value, [activeId]: { ...createDefaultResult(activeId), status: 'running' } }))
+      if (isVerify) {
+        setVerifyResults((value) => ({ ...value, [activeId]: { ...createDefaultResult(activeId), status: 'running', mode: 'verify' } }))
+      } else {
+        setResults((value) => ({ ...value, [activeId]: { ...createDefaultResult(activeId), status: 'running', mode: 'suite' } }))
+      }
     }
-    if (request.kind === 'verify' || request.kind === 'verifyAll') {
+
+    if (isVerify) {
       setTab('proof')
-    } else if (request.kind === 'command' || request.kind === 'rebuild') {
+    } else {
       setTab('terminal')
     }
     setElapsedSec(0)
@@ -236,22 +291,12 @@ export default function App() {
     controllerRef.current = controller
     try {
       await client.stream(request, handleEvent, controller.signal)
-      if (controllerRef.current === controller) {
-        setRunState('idle')
-        setRunningTask(null)
-        runningTaskRef.current = null
-        setRunningLabel(null)
-        controllerRef.current = null
-      }
+      if (controllerRef.current === controller) clearRunFlags()
       void refresh()
     } catch (error) {
       if (controller.signal.aborted) return
       if (showError(error) === 'offline') setOffline(true)
-      setRunState('idle')
-      setRunningTask(null)
-      runningTaskRef.current = null
-      setRunningLabel(null)
-      controllerRef.current = null
+      clearRunFlags()
     }
   }
 
@@ -270,11 +315,7 @@ export default function App() {
     }
     const cancellation = client.cancel()
     controller.abort()
-    controllerRef.current = null
-    setRunState('idle')
-    setRunningTask(null)
-    runningTaskRef.current = null
-    setRunningLabel(null)
+    clearRunFlags()
     append('\r\n\x1b[33m[dashboard] run cancelled\x1b[0m\r\n')
     toast.message('Run stopped')
     try { await cancellation } catch { toast.warning('The stream stopped locally, but the backend did not confirm cancellation.') }
@@ -294,10 +335,22 @@ export default function App() {
     else if (action === 'usertests' || action === 'task1' || action === 'task2a' || action === 'task2b' || action === 'task3') void start({ kind: 'run', task: action })
   }
 
-  const statusList = Object.fromEntries(fallbackTasks.slice(0, 4).map((task) => [task.id, results[task.id]?.status || 'idle'])) as Record<string, TaskStatus>
-  const passed = fallbackTasks.slice(0, 4).filter((task) => results[task.id]?.status === 'pass').length
+  const combinedStatus = (id: TaskId): TaskStatus => {
+    const r = results[id]?.status
+    const v = verifyResults[id]?.status
+    if (r === 'running' || v === 'running') return 'running'
+    if (r === 'pass' || v === 'pass') return 'pass'
+    if (r && r !== 'idle') return r
+    if (v && v !== 'idle') return v
+    return 'idle'
+  }
+
+  const statusList = Object.fromEntries(fallbackTasks.slice(0, 4).map((task) => [task.id, combinedStatus(task.id)])) as Record<string, TaskStatus>
+  const combinedResultsMap = Object.fromEntries(fallbackTasks.slice(0, 4).map((task) => [task.id, { status: combinedStatus(task.id) }])) as Record<string, { status: TaskStatus }>
+  const passed = fallbackTasks.slice(0, 4).filter((task) => combinedStatus(task.id) === 'pass').length
   const onlineStatus = offline ? 'offline' : reportedState === 'building' ? 'building' : reportedState === 'running' ? 'running' : 'idle'
   const currentRunningTask: TaskId | null = runningTask ?? (serverStatus.current_task && isTask(serverStatus.current_task) ? serverStatus.current_task : null)
+  const verifySelectedTask: VerifyTaskId = selectedTask === 'usertests' ? 'task1' : selectedTask
 
   return (
     <div className={`app-shell ${demoMode ? 'demo-mode' : ''}`}>
@@ -377,16 +430,16 @@ export default function App() {
             </div>
             <h1>Small kernel.<br /><span>Big ideas.</span></h1>
             <p className="hero-subtitle">
-              Periodic alarms, 65,803-block large files, symbolic links, and lazy memory-mapped files — tested live in QEMU.
+              Periodic alarms, 65,803-block large files, symbolic links, and lazy memory-mapped files — run live in QEMU or open Visual Verification to explain each feature simply.
             </p>
             <div className="hero-buttons">
-              <button className="hero-run" onClick={() => void start({ kind: 'verifyAll' })} disabled={active}>
-                <ShieldCheck size={15} />
-                {active ? 'Running verification…' : 'Verify all visually (~6s)'}
+              <button className="hero-run" onClick={() => void start({ kind: 'runAll' })} disabled={active}>
+                <Play size={14} fill="currentColor" />
+                {active ? 'Running…' : 'Run all tasks'}
                 <ChevronRight size={15} />
               </button>
-              <button className="hero-demo" onClick={() => void start({ kind: 'runAll' })} disabled={active}>
-                <Play size={13} fill="currentColor" /> Full MIT test suites
+              <button className="hero-demo" onClick={() => openVerifyTab()}>
+                <ShieldCheck size={14} /> Visual Verification
               </button>
               {active && (
                 <button className="hero-stop" onClick={() => void stop()}>
@@ -437,7 +490,7 @@ export default function App() {
               <span className="section-eyebrow">THE PROJECT</span>
               <h2>Kernel extensions <span className="subtle-count">04</span></h2>
             </div>
-            <span className="section-hint">Click any card to inspect its diff and architecture below</span>
+            <span className="section-hint">Click Run on any card to watch its live output in the Terminal below</span>
           </div>
 
           <div className="task-grid">
@@ -448,12 +501,12 @@ export default function App() {
                   <TaskCard
                     task={task}
                     result={results[task.id] || createDefaultResult(task.id)}
+                    verified={verifyResults[task.id]?.status === 'pass'}
                     selected={selectedTask === task.id}
-                    running={active && currentRunningTask === task.id}
+                    running={active && runningMode !== 'verify' && currentRunningTask === task.id}
                     busy={active}
-                    onVerify={() => void start({ kind: 'verify', task: task.id })}
                     onRun={() => void start({ kind: 'run', task: task.id })}
-                    onSelect={() => { setSelectedHero(task.id); setSelectedTask(task.id); setTab('proof') }}
+                    onSelect={() => { setSelectedHero(task.id); setSelectedTask(task.id) }}
                   />
                 </motion.div>
               ))}
@@ -475,7 +528,7 @@ export default function App() {
           </div>
         </section>
 
-        <section className="workspace-section">
+        <section className="workspace-section" ref={workspaceRef}>
           <div className="workspace-heading">
             <div>
               <span className="section-eyebrow">OBSERVE THE SYSTEM</span>
@@ -492,17 +545,17 @@ export default function App() {
           <div className="workspace-grid">
             <div className="workspace-main">
               <div className="workspace-tabs" role="tablist" aria-label="Workspace panels">
-                <button className={tab === 'proof' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'proof'} onClick={() => setTab('proof')}>
-                  <ShieldCheck size={15} />Visual proof
-                </button>
                 <button className={tab === 'terminal' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'terminal'} onClick={() => setTab('terminal')}>
                   <TerminalSquare size={15} />Terminal{output.length > 0 && <span className="tab-count">LIVE</span>}
+                </button>
+                <button className={tab === 'proof' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'proof'} onClick={() => setTab('proof')}>
+                  <ShieldCheck size={15} />Verify
                 </button>
                 <button className={tab === 'diff' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'diff'} onClick={() => setTab('diff')}>
                   <GitBranch size={15} />Diff
                 </button>
                 <button className={tab === 'explain' ? 'tab-active' : ''} role="tab" aria-selected={tab === 'explain'} onClick={() => setTab('explain')}>
-                  <Sparkles size={15} />Interactive model
+                  <Sparkles size={15} />How it works
                 </button>
                 <div className="tab-spacer" />
                 <span className="selected-module">{selectedTask}</span>
@@ -510,24 +563,25 @@ export default function App() {
 
               <AnimatePresence mode="wait">
                 <motion.div
-                  key={`${tab}-${tab === 'proof' ? selectedTask : 'panel'}`}
+                  key={tab}
                   className={`workspace-panel ${tab === 'terminal' ? 'terminal-workspace' : ''}`}
                   initial={{ opacity: 0, y: 4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -4 }}
                   transition={{ duration: 0.14 }}
                 >
-                  {tab === 'proof' ? (
-                    <VerificationPanel
-                      task={selectedTask}
-                      result={results[selectedTask] || createDefaultResult(selectedTask)}
-                      busy={active}
-                      runningThis={active && currentRunningTask === selectedTask}
-                      onVerify={() => void start({ kind: 'verify', task: selectedTask })}
-                      onRunSuite={() => void start({ kind: 'run', task: selectedTask })}
-                    />
-                  ) : tab === 'terminal' ? (
+                  {tab === 'terminal' ? (
                     <TerminalPanel output={output} busy={active} onCommand={(command) => void start({ kind: 'command', command })} onClear={clearTerminal} selected={selectedTask} />
+                  ) : tab === 'proof' ? (
+                    <VerificationPanel
+                      task={verifySelectedTask}
+                      allVerifyResults={verifyResults}
+                      busy={active}
+                      runningThis={active && runningMode === 'verify' && currentRunningTask === verifySelectedTask}
+                      onSelectTask={(nextTask) => { setSelectedTask(nextTask); setSelectedHero(nextTask) }}
+                      onVerify={(nextTask) => void start({ kind: 'verify', task: nextTask })}
+                      onVerifyAll={() => void start({ kind: 'verifyAll' })}
+                    />
                   ) : tab === 'diff' ? (
                     <DiffPanel task={selectedTask} client={client} />
                   ) : (
@@ -555,9 +609,9 @@ export default function App() {
                 busy={active}
                 state={reportedState}
                 current={currentRunningTask}
-                results={results}
-                onVerifyAll={() => void start({ kind: 'verifyAll' })}
+                results={combinedResultsMap}
                 onRunAll={() => void start({ kind: 'runAll' })}
+                onOpenVerify={() => openVerifyTab()}
                 onCancel={() => void stop()}
                 onRebuild={(clean) => void start({ kind: 'rebuild', clean })}
                 onRunBigfileDemo={() => { setSelectedHero('bigfiledemo'); void start({ kind: 'command', command: 'bigfiledemo' }) }}

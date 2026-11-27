@@ -10,7 +10,7 @@ const envBase = import.meta.env.VITE_API_BASE_URL?.trim()
 const envMock = import.meta.env.VITE_USE_MOCK
 
 export const DEFAULT_SETTINGS: RuntimeSettings = {
-  useMock: envMock === undefined ? true : !['false', '0', 'no'].includes(envMock.toLowerCase()),
+  useMock: envMock === undefined ? false : !['false', '0', 'no'].includes(envMock.toLowerCase()),
   apiBase: (envBase || 'http://127.0.0.1:5000/api').replace(/\/+$/, ''),
   simulateFailure: false,
   simulateOffline: false,

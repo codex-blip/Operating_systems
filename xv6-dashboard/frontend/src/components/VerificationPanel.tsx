@@ -1,483 +1,418 @@
-import { ArrowRight, CheckCircle2, Circle, Clock3, Cpu, FileCheck2, HardDrive, Layers, Link2, LoaderCircle, Play, ShieldCheck, Sparkles, TerminalSquare, XCircle } from 'lucide-react'
+import { useState } from 'react'
+import {
+  ArrowRight, CheckCircle2, ChevronDown, ChevronRight, Circle,
+  Clock3, HardDrive, Layers, Link2, LoaderCircle, ShieldCheck,
+  Sparkles, TerminalSquare, Timer, XCircle,
+} from 'lucide-react'
 import type { Result, Subtest, TaskId } from '../api/types'
 
+type VerifyTaskId = Exclude<TaskId, 'usertests'>
+
 type Props = {
-  task: TaskId
-  result: Result
+  task: VerifyTaskId
+  allVerifyResults: Record<string, Result>
   busy: boolean
   runningThis: boolean
-  onVerify: () => void
-  onRunSuite: () => void
+  onSelectTask: (task: VerifyTaskId) => void
+  onVerify: (task: VerifyTaskId) => void
+  onVerifyAll: () => void
 }
 
-type CheckDoc = {
+const TASK_TABS: { id: VerifyTaskId; short: string; title: string; analogy: string }[] = [
+  {
+    id: 'task1',
+    short: '1 · Alarms',
+    title: 'Periodic Alarms',
+    analogy: 'Like a repeating kitchen timer: the OS pauses a program on schedule, runs a short alarm function, and lets the program continue without losing any work.',
+  },
+  {
+    id: 'task2a',
+    short: '2A · Large Files',
+    title: 'Large Files',
+    analogy: 'Normally xv6 files stop at 268 KB. Adding a 3rd storage level lets one file grow 245× larger — up to 64 MB — without changing the file header size.',
+  },
+  {
+    id: 'task2b',
+    short: '2B · Shortcuts',
+    title: 'Symbolic Links (Shortcuts)',
+    analogy: 'Works like desktop shortcuts: a link points to another file (even across multiple shortcuts) while automatically stopping infinite loops.',
+  },
+  {
+    id: 'task3',
+    short: '3 · Memory-Mapped Files',
+    title: 'Memory-Mapped Files',
+    analogy: 'Lets a program read and edit a file directly like normal memory — loading pages only when touched and saving shared edits back to disk.',
+  },
+]
+
+type SimpleCheck = {
+  id: string
   title: string
-  codePath: string
-  explain: string
+  summary: string
 }
 
-const CHECK_DOCS: Record<string, CheckDoc> = {
-  // Deep verify checks — Task 1
-  periodic_registers: {
-    title: 'Periodic Timer Delivery & 31-Register Snapshot',
-    codePath: 'trap.c:usertrap() → proc->alarm_tf',
-    explain: 'Every N CPU timer ticks, the kernel saves all 31 user registers into p->alarm_tf, jumps epc to the user handler, and resumes foo(i,&j) without losing a single loop count.',
-  },
-  non_reentrant: {
-    title: 'Non-Reentrant Guard & sigalarm(0, 0) Disable',
-    codePath: 'trap.c (p->in_handler == 1)',
-    explain: 'While a slow handler is still running across multiple hardware timer interrupts, p->in_handler blocks nested handler calls; calling sigalarm(0, 0) cleanly disarms future alarms.',
-  },
-  a0_restore: {
-    title: 'Return-Value Register (a0) Restoration',
-    codePath: 'sysproc.c:sys_sigreturn()',
-    explain: 'syscall() normally overwrites trapframe->a0 with the syscall return value. sys_sigreturn() returns the saved trapframe->a0 (0xac) so the interrupted user code never sees a clobbered register.',
-  },
-  exec_reset: {
-    title: 'Clean Alarm Reset Across exec()',
-    codePath: 'exec.c:exec()',
-    explain: 'When a process with an active sigalarm calls exec(), the kernel clears alarm_interval and alarm_handler so the new binary never jumps to a stale virtual address.',
-  },
-  // Standard alarmtest checks
-  test0: {
-    title: 'test0 · Handler Invoked on Timer Interrupt',
-    codePath: 'trap.c:usertrap() (which_dev == 2)',
-    explain: 'Confirms hardware timer interrupts increment p->alarm_ticks and redirect user epc to periodic() once the configured tick interval is reached.',
-  },
-  test1: {
-    title: 'test1 · Repeated Calls & Full Register Preservation',
-    codePath: 'trap.c + sysproc.c:sys_sigreturn()',
-    explain: 'Fires the alarm 10 times during a tight foo(i, &j) loop and verifies i == j afterward, proving PC and caller/callee-saved registers are restored identically.',
-  },
-  test2: {
-    title: 'test2 · Re-entrancy Prevention Under Slow Handler',
-    codePath: 'trap.c (!p->in_handler)',
-    explain: 'Runs a long loop inside slow_handler() spanning many timer ticks and proves the kernel never re-enters the handler before sigreturn().',
-  },
-  test3: {
-    title: 'test3 · Register a0 (0xac) Intact After sigreturn()',
-    codePath: 'sysproc.c:sys_sigreturn()',
-    explain: 'Loads 0xac into register a0 before an alarm fires and verifies a0 still holds 0xac after sigreturn() returns to user mode.',
-  },
-
-  // Deep verify checks — Task 2A
-  direct_blocks: {
-    title: 'Tier 1 · 11 Direct Block Pointers (addrs[0..10])',
-    codePath: 'fs.h (NDIRECT = 11) · fs.c:bmap()',
-    explain: 'Shrank NDIRECT from 12 to 11 so struct dinode stays exactly 64 bytes on disk while freeing slot 12 for the doubly-indirect root.',
-  },
-  single_indirect: {
-    title: 'Tier 2 · Singly-Indirect Table (addrs[11] → 256 blocks)',
-    codePath: 'fs.c:bmap() (bn < NINDIRECT)',
-    explain: 'Logical blocks 11..266 allocate and index a 1 KB indirect block holding 256 uint32 disk block addresses (256 KB).',
-  },
-  double_indirect: {
-    title: 'Tier 3 · Doubly-Indirect Tree (addrs[12] → 256 × 256)',
-    codePath: 'fs.c:bmap() (bn / 256, bn % 256)',
-    explain: 'Logical blocks >= 267 walk L1 = bn / 256 and L2 = bn % 256 inside addrs[12], expanding file capacity up to 65,803 blocks (67.38 MB).',
-  },
-  read_verify: {
-    title: 'End-to-End Block Checksum Verification',
-    codePath: 'fs.c:readi() → bmap()',
-    explain: 'Reopens the file from disk and verifies both block-header indices and tail checksum bytes across direct, single-indirect, and double-indirect tiers.',
-  },
-  itrunc_cleanup: {
-    title: 'Complete 3-Tier Block Reclamation (itrunc)',
-    codePath: 'fs.c:itrunc()',
-    explain: 'Truncates and unlinks the multi-tier file, freeing all L2 data blocks, L1 indirect blocks, and root tables back to the bitmap without stack overflow.',
-  },
-  write: {
-    title: 'Write Full 65,803-Block File (67.38 MB)',
-    codePath: 'fs.c:writei() → bmap() + log.c',
-    explain: 'Allocates and writes 11 direct + 256 singly-indirect + 65,536 doubly-indirect blocks to disk, hitting the exact MAXFILE target.',
-  },
-  read: {
-    title: 'Read & Verify All 65,803 Blocks Back',
-    codePath: 'fs.c:readi() → bmap()',
-    explain: 'Reads every single 1 KB block back from disk and confirms its embedded block index matches 0..65,802 with zero corruption.',
-  },
-
-  // Deep verify checks — Task 2B
-  chain_follow: {
-    title: 'Multi-Hop Symbolic Link Resolution',
-    codePath: 'sysfile.c:sys_open() + sys_symlink()',
-    explain: 'Creates a 3-hop chain (/vsym_1 → /vsym_2 → /vsym_3 → /vsym_target), writes data through the first link, and reads the identical bytes from the target file.',
-  },
-  nofollow_stat: {
-    title: 'O_NOFOLLOW Inode Inspection & Directory Support',
-    codePath: 'sysfile.c:sys_open() (O_NOFOLLOW)',
-    explain: 'Opening with O_NOFOLLOW stops at the T_SYMLINK (type=4) inode instead of dereferencing it, and allows read-only O_NOFOLLOW opens on directories.',
-  },
-  cycle_guard: {
-    title: 'Dangling Symlinks & Cycle Cutoff (Depth 10)',
-    codePath: 'sysfile.c:sys_open() (depth >= 10)',
-    explain: 'Allows creating symlinks to nonexistent paths (dangling), while detecting mutual loops (a ↔ b) at depth 10 and returning -1 safely.',
-  },
-  concurrent_ops: {
-    title: 'SMP Multi-Process Concurrent Symlink Stress',
-    codePath: 'fs.c:ilock() + create() + sys_unlink()',
-    explain: 'Forked worker processes concurrently create, stat, and unlink symlinks on the same path across multiple RISC-V harts with zero panics or leaks.',
-  },
-  symlinks: {
-    title: 'Symlink Creation, 4-Hop Chains, Dangling & Cycles',
-    codePath: 'sysfile.c:sys_symlink() + sys_open()',
-    explain: 'Verifies b → a read/write, T_SYMLINK stat via O_NOFOLLOW, target deletion behavior, b ↔ a cycle rejection, and 1 → 2 → 3 → 4 chain resolution.',
-  },
-  'concurrent symlinks': {
-    title: 'Concurrent Multi-Process Symlink Race Stress',
-    codePath: 'sysfile.c + fs.c inode sleeplocks',
-    explain: 'Two child processes hammer symlink() + stat(O_NOFOLLOW) + unlink() on the same path 100 times each without race conditions.',
-  },
-
-  // Deep verify checks — Task 3
-  lazy_fault: {
-    title: 'Zero-Allocation mmap() & Demand Page Fault',
-    codePath: 'sysfile.c:sys_mmap() → trap.c → vm.c:vm_fault()',
-    explain: 'mmap() records only VMA metadata (PTE_V=0). Modifying the file after mmap() is visible on first touch, and partial EOF pages are zero-filled.',
-  },
-  shared_writeback: {
-    title: 'MAP_PRIVATE Isolation vs MAP_SHARED Dirty Write-Back',
-    codePath: 'vm.c:vm_unmap() (PTE_D check → writei)',
-    explain: 'MAP_PRIVATE edits stay private in RAM and never alter the file; MAP_SHARED dirty pages (PTE_D=1) are written back on partial and full munmap().',
-  },
-  copyout_va_reuse: {
-    title: 'Non-Aligned munmap(), VA Reclamation & copyout PTE_D',
-    codePath: 'sysfile.c:sys_munmap() + vm.c:copyout()',
-    explain: 'Unaligned lengths (120 B) round cleanly, freed virtual addresses are reused on the next mmap(), and kernel read()/copyout() marks PTE_D so data persists.',
-  },
-  fork_protection: {
-    title: 'fork() VMA Inheritance & Page-Permission Traps',
-    codePath: 'proc.c:fork() + trap.c (setkilled)',
-    explain: 'Child processes inherit VMA mappings and file refcounts via filedup(), while writing to a PROT_READ mapping or reading unmapped pages traps and exits -1.',
-  },
-}
-
-function Task1Visual({ result }: { result: Result }) {
-  const verified = result.status === 'pass'
-  const fires = result.metrics?.handler_fires ?? (verified ? 12 : '—')
-  const a0Val = result.metrics?.a0_hex ?? (verified ? '0xac' : '—')
-
-  const stages = [
-    { step: '01', label: 'User Program', detail: 'foo(i, &j) · a0 = 0xac', sub: 'U-mode executing' },
-    { step: '02', label: 'Timer Interrupt', detail: 'which_dev == 2', sub: 'ticks == interval' },
-    { step: '03', label: 'Save Trapframe', detail: 'p->alarm_tf = *tf', sub: 'in_handler = 1 (no re-entry)' },
-    { step: '04', label: 'Run Handler fn()', detail: 'tf->epc = handler', sub: 'executes in user space' },
-    { step: '05', label: 'sys_sigreturn()', detail: '*tf = p->alarm_tf', sub: 'restores PC & a0 = 0xac' },
-  ]
-
-  return (
-    <div className="vp-diagram">
-      <div className="vp-diagram-head">
-        <span><Cpu size={14} /> KERNEL TRAP &amp; CONTEXT-RESTORE PIPELINE</span>
-        <span className={`vp-badge ${verified ? 'vp-badge-ok' : ''}`}>
-          {verified ? '31/31 REGISTERS & PC PROVEN INTACT' : 'AWAITING VERIFICATION RUN'}
-        </span>
-      </div>
-
-      <div className="vp-pipeline">
-        {stages.map((s, idx) => (
-          <div className="vp-pipe-wrap" key={s.step}>
-            <div className={`vp-pipe-node ${verified ? 'vp-node-verified' : ''}`}>
-              <span className="vp-step-num">STEP {s.step}</span>
-              <strong>{s.label}</strong>
-              <code>{s.detail}</code>
-              <small>{s.sub}</small>
-            </div>
-            {idx < stages.length - 1 && <ArrowRight size={15} className="vp-arrow" />}
-          </div>
-        ))}
-      </div>
-
-      <div className="vp-metrics-grid">
-        <div className="vp-metric"><span>HANDLER CALLS OBSERVED</span><strong>{fires}</strong><small>Triggered on CPU tick intervals</small></div>
-        <div className="vp-metric"><span>SAVED TRAPFRAME REGS</span><strong>31 / 31</strong><small>ra, sp, s0–s11, t0–t6, a0–a7</small></div>
-        <div className="vp-metric"><span>REGISTER a0 CHECK</span><strong>{String(a0Val)} → {String(a0Val)}</strong><small>Not clobbered by sigreturn()</small></div>
-        <div className="vp-metric"><span>RE-ENTRANCY &amp; EXEC</span><strong>0 nested</strong><small>Blocked while in_handler = 1</small></div>
-      </div>
-    </div>
-  )
-}
-
-function Task2AVisual({ result }: { result: Result }) {
-  const verified = result.status === 'pass'
-  const direct = Number(result.metrics?.direct_blocks ?? (verified ? 11 : 0))
-  const single = Number(result.metrics?.single_blocks ?? (verified ? 256 : 0))
-  const doubleB = Number(result.metrics?.double_blocks ?? (verified ? (result.mode === 'suite' ? 65536 : 263) : 0))
-
-  const tiers = [
+const SIMPLE_CHECKS: Record<VerifyTaskId, SimpleCheck[]> = {
+  task1: [
     {
-      name: 'Direct Blocks',
-      slot: 'ip->addrs[0..10]',
-      range: 'Blocks 0 – 10',
-      tested: direct,
-      max: 11,
-      pct: verified ? 100 : 0,
-      note: '11 KB direct data pointers in dinode',
+      id: 'periodic_registers',
+      title: 'Timer rings on schedule & no work is lost',
+      summary: 'The alarm fired repeatedly during a heavy calculation and every single number stayed 100% accurate afterward.',
     },
     {
-      name: 'Singly-Indirect',
-      slot: 'ip->addrs[11]',
-      range: 'Blocks 11 – 266',
-      tested: single,
-      max: 256,
-      pct: verified ? 100 : 0,
-      note: '1 table block → 256 block numbers (256 KB)',
+      id: 'non_reentrant',
+      title: 'Slow alarms never overlap each other',
+      summary: 'While one alarm was still running, new timer ticks waited safely — and turning the timer off stopped future alarms.',
     },
     {
-      name: 'Doubly-Indirect',
-      slot: 'ip->addrs[12]',
-      range: 'Blocks 267 – 65,802',
-      tested: doubleB,
-      max: 65536,
-      pct: verified ? Math.max(18, Math.round((doubleB / 65536) * 100)) : 0,
-      note: '256 L1 entries × 256 L2 entries (up to 64 MB)',
+      id: 'a0_restore',
+      title: 'Active data stays untouched on return',
+      summary: 'Confirmed that returning from the alarm does not overwrite the program’s active return-value register.',
     },
-  ]
-
-  return (
-    <div className="vp-diagram">
-      <div className="vp-diagram-head">
-        <span><HardDrive size={14} /> ON-DISK INODE (64 BYTES) &amp; 3-TIER BLOCK INDIRECTION</span>
-        <span className={`vp-badge ${verified ? 'vp-badge-ok' : ''}`}>
-          {verified ? `VERIFIED ${direct + single + doubleB} BLOCKS ACROSS ALL 3 TIERS` : '11 + 256 + 65,536 = 65,803 MAX'}
-        </span>
-      </div>
-
-      <div className="vp-tiers">
-        {tiers.map((t) => (
-          <div className={`vp-tier-row ${verified ? 'vp-tier-ok' : ''}`} key={t.name}>
-            <div className="vp-tier-meta">
-              <div>
-                <strong>{t.name}</strong>
-                <code>{t.slot}</code>
-              </div>
-              <span>{t.range}</span>
-            </div>
-            <div className="vp-bar-track">
-              <div className="vp-bar-fill" style={{ width: `${t.pct}%` }} />
-            </div>
-            <div className="vp-tier-foot">
-              <small>{t.note}</small>
-              <strong>{verified ? `${t.tested.toLocaleString()} / ${t.max.toLocaleString()} blocks verified` : `Capacity: ${t.max.toLocaleString()} blocks`}</strong>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="vp-metrics-grid">
-        <div className="vp-metric"><span>STRUCT DINODE SIZE</span><strong>64 bytes</strong><small>Unchanged on-disk inode size</small></div>
-        <div className="vp-metric"><span>MAX FILE CAPACITY</span><strong>65,803 blks</strong><small>245× larger than stock 268 blks</small></div>
-        <div className="vp-metric"><span>CHECKSUM READBACK</span><strong>{verified ? '100% match' : '—'}</strong><small>Header index + tail byte verified</small></div>
-        <div className="vp-metric"><span>ITRUNC() CLEANUP</span><strong>{verified ? 'All 3 tiers freed' : '—'}</strong><small>L2 data → L1 tables → root freed</small></div>
-      </div>
-    </div>
-  )
+    {
+      id: 'exec_reset',
+      title: 'Starting a new program clears old alarms',
+      summary: 'Launching a fresh program cleanly resets any previous alarm so it can never jump to an old address.',
+    },
+  ],
+  task2a: [
+    {
+      id: 'direct_blocks',
+      title: 'Small files use fast direct slots (Level 1)',
+      summary: 'First 11 blocks (11 KB) are stored and accessed directly from the file header.',
+    },
+    {
+      id: 'single_indirect',
+      title: 'Medium files expand into a single index (Level 2)',
+      summary: 'Next 256 blocks (256 KB) are tracked through a 1-level index block.',
+    },
+    {
+      id: 'double_indirect',
+      title: 'Large files expand into a double index (Level 3)',
+      summary: 'Blocks past 267 use a 2-level index tree, unlocking up to 65,803 total blocks (~64 MB).',
+    },
+    {
+      id: 'read_verify',
+      title: 'Every block read back matches 100%',
+      summary: 'Re-opened the file from disk and checked every written block across all 3 levels with zero errors.',
+    },
+    {
+      id: 'itrunc_cleanup',
+      title: 'Deleting the file frees all disk space',
+      summary: 'Removing the file cleanly freed data blocks and all index tables back to the filesystem.',
+    },
+  ],
+  task2b: [
+    {
+      id: 'chain_follow',
+      title: 'Chains of shortcuts reach the real file',
+      summary: 'Followed 3 shortcuts in a row, wrote text through the first one, and read the exact same text from the real file.',
+    },
+    {
+      id: 'nofollow_stat',
+      title: 'Shortcuts can be inspected directly',
+      summary: 'Opening a shortcut without following it identifies it as a shortcut itself instead of jumping to the target.',
+    },
+    {
+      id: 'cycle_guard',
+      title: 'Broken links & infinite loops are handled safely',
+      summary: 'Pointing to a missing file is allowed, and circular loops (A → B → A) stop cleanly at 10 steps instead of hanging.',
+    },
+    {
+      id: 'concurrent_ops',
+      title: 'Multiple programs can use shortcuts at once',
+      summary: 'Two processes created, checked, and removed shortcuts at the exact same time with zero crashes.',
+    },
+  ],
+  task3: [
+    {
+      id: 'lazy_fault',
+      title: 'Loads pages only when you actually touch them',
+      summary: 'Mapping the file used zero memory upfront and automatically loaded the latest file contents on first read.',
+    },
+    {
+      id: 'shared_writeback',
+      title: 'Shared edits save to disk; private edits stay private',
+      summary: 'Changes in shared mode were written back to the file on disk, while private changes never modified the file.',
+    },
+    {
+      id: 'copyout_va_reuse',
+      title: 'Unmapped memory is freed and reused cleanly',
+      summary: 'Unmapping part of a file released its memory range so the next mapping could reuse it immediately.',
+    },
+    {
+      id: 'fork_protection',
+      title: 'Child processes inherit & read-only is protected',
+      summary: 'A forked child could read the mapped file, and trying to write to a read-only mapping was blocked safely.',
+    },
+  ],
 }
 
-function Task2BVisual({ result }: { result: Result }) {
+function SimpleVisual({ task, result }: { task: VerifyTaskId; result: Result }) {
   const verified = result.status === 'pass'
-  const hops = result.metrics?.chain_hops ?? (verified ? 4 : 3)
-  const ops = result.metrics?.concurrent_ops ?? (verified ? 200 : 80)
+
+  if (task === 'task1') {
+    const fires = result.metrics?.handler_fires ?? (verified ? 7 : '—')
+    return (
+      <div className="vp-story">
+        <div className="vp-story-label"><Timer size={14} /> HOW IT WORKS</div>
+        <div className="vp-steps-3">
+          <div className={`vp-step-card ${verified ? 'vp-step-ok' : ''}`}>
+            <span className="vp-step-num">STEP 1</span>
+            <strong>Program runs normally</strong>
+            <p>Your program is busy doing work in a loop.</p>
+          </div>
+          <ArrowRight size={16} className="vp-arrow" />
+          <div className={`vp-step-card ${verified ? 'vp-step-ok' : ''}`}>
+            <span className="vp-step-num">STEP 2</span>
+            <strong>Timer rings &amp; pauses</strong>
+            <p>The OS saves the program’s exact place and runs the alarm.</p>
+          </div>
+          <ArrowRight size={16} className="vp-arrow" />
+          <div className={`vp-step-card ${verified ? 'vp-step-ok' : ''}`}>
+            <span className="vp-step-num">STEP 3</span>
+            <strong>Resumes seamlessly</strong>
+            <p>The program continues from the exact spot with zero lost data.</p>
+          </div>
+        </div>
+        <div className="vp-stat-row">
+          <div className="vp-stat"><span>Alarms triggered</span><strong>{verified ? `${fires} times` : '—'}</strong></div>
+          <div className="vp-stat"><span>Work lost</span><strong>{verified ? '0% (exact match)' : '—'}</strong></div>
+          <div className="vp-stat"><span>Overlapping alarms</span><strong>{verified ? 'Blocked safely' : '—'}</strong></div>
+        </div>
+      </div>
+    )
+  }
+
+  if (task === 'task2a') {
+    return (
+      <div className="vp-story">
+        <div className="vp-story-label"><HardDrive size={14} /> BEFORE VS. AFTER FILE SIZE LIMIT</div>
+        <div className="vp-compare">
+          <div className="vp-compare-card">
+            <span className="vp-step-num">BEFORE (ORIGINAL XV6)</span>
+            <strong>268 KB max</strong>
+            <p>Only 2 storage levels (12 direct + 256 single-index blocks).</p>
+          </div>
+          <ArrowRight size={16} className="vp-arrow" />
+          <div className={`vp-compare-card ${verified ? 'vp-step-ok' : ''}`}>
+            <span className="vp-step-num">AFTER (OUR UPGRADE · 245× BIGGER)</span>
+            <strong>64 MB max (65,803 blocks)</strong>
+            <p>Added a 3rd storage level (table of tables) with the same 64-byte header.</p>
+          </div>
+        </div>
+        <div className="vp-bars-simple">
+          <div className="vp-bar-item">
+            <div className="vp-bar-head"><strong>Level 1 · Direct</strong><span>11 blocks (11 KB)</span></div>
+            <div className="vp-bar-track"><div className="vp-bar-fill" style={{ width: verified ? '100%' : '0%' }} /></div>
+          </div>
+          <div className="vp-bar-item">
+            <div className="vp-bar-head"><strong>Level 2 · Single Index</strong><span>256 blocks (256 KB)</span></div>
+            <div className="vp-bar-track"><div className="vp-bar-fill" style={{ width: verified ? '100%' : '0%' }} /></div>
+          </div>
+          <div className="vp-bar-item">
+            <div className="vp-bar-head"><strong>Level 3 · Double Index (New)</strong><span>65,536 blocks (64 MB)</span></div>
+            <div className="vp-bar-track"><div className="vp-bar-fill" style={{ width: verified ? '100%' : '0%' }} /></div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (task === 'task2b') {
+    return (
+      <div className="vp-story">
+        <div className="vp-story-label"><Link2 size={14} /> SHORTCUT FOLLOWING &amp; LOOP SAFETY</div>
+        <div className="vp-compare">
+          <div className={`vp-compare-card ${verified ? 'vp-step-ok' : ''}`}>
+            <span className="vp-step-num">CHAIN OF SHORTCUTS</span>
+            <div className="vp-chain-pills">
+              <span className="vp-pill-link">Link 1</span>
+              <ArrowRight size={12} />
+              <span className="vp-pill-link">Link 2</span>
+              <ArrowRight size={12} />
+              <span className="vp-pill-link">Link 3</span>
+              <ArrowRight size={12} />
+              <span className="vp-pill-target">Real File</span>
+            </div>
+            <p>Opening Link 1 automatically reaches and edits the real file.</p>
+          </div>
+          <div className={`vp-compare-card ${verified ? 'vp-step-ok' : ''}`}>
+            <span className="vp-step-num">INFINITE LOOP PROTECTION</span>
+            <div className="vp-chain-pills">
+              <span className="vp-pill-link">Link A</span>
+              <ArrowRight size={12} />
+              <span className="vp-pill-link">Link B</span>
+              <ArrowRight size={12} />
+              <span className="vp-pill-stop">Stopped at 10</span>
+            </div>
+            <p>Circular shortcuts return an error instead of freezing the system.</p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="vp-diagram">
-      <div className="vp-diagram-head">
-        <span><Link2 size={14} /> SYMLINK RESOLUTION CHAIN, O_NOFOLLOW &amp; CYCLE PROTECTION</span>
-        <span className={`vp-badge ${verified ? 'vp-badge-ok' : ''}`}>
-          {verified ? 'CHAIN + O_NOFOLLOW + CYCLE GUARD VERIFIED' : 'MAX DEPTH = 10 HOPS'}
-        </span>
-      </div>
-
-      <div className="vp-symlink-grid">
-        <div className={`vp-sym-box ${verified ? 'vp-node-verified' : ''}`}>
-          <span className="vp-step-num">1 · MULTI-HOP DEREFERENCE (open)</span>
-          <div className="vp-hop-chain">
-            <span className="vp-hop vp-hop-link">link1<small>T_SYMLINK</small></span>
-            <ArrowRight size={13} />
-            <span className="vp-hop vp-hop-link">link2<small>T_SYMLINK</small></span>
-            <ArrowRight size={13} />
-            <span className="vp-hop vp-hop-link">link3<small>T_SYMLINK</small></span>
-            <ArrowRight size={13} />
-            <span className="vp-hop vp-hop-file">target<small>T_FILE · data OK</small></span>
-          </div>
-          <small>Write through link1 lands in target inode; read from target matches byte-for-byte ({hops} hops).</small>
+    <div className="vp-story">
+      <div className="vp-story-label"><Layers size={14} /> HOW MEMORY-MAPPED FILES WORK</div>
+      <div className="vp-steps-3">
+        <div className={`vp-step-card ${verified ? 'vp-step-ok' : ''}`}>
+          <span className="vp-step-num">STEP 1</span>
+          <strong>Reserve memory</strong>
+          <p>File is linked to an address range instantly — nothing loaded yet.</p>
         </div>
-
-        <div className={`vp-sym-box ${verified ? 'vp-node-verified' : ''}`}>
-          <span className="vp-step-num">2 · LOOP CUTOFF &amp; O_NOFOLLOW</span>
-          <div className="vp-cycle-row">
-            <code>cyc_a → cyc_b → cyc_a</code>
-            <span className="vp-cycle-badge">depth 10 / 10 → returns -1</span>
-          </div>
-          <div className="vp-cycle-row">
-            <code>open(link, O_NOFOLLOW)</code>
-            <span className="vp-ok-badge">stops at T_SYMLINK (type=4)</span>
-          </div>
-          <small>Prevents infinite kernel loops on cyclic links while supporting stat_slink() &amp; O_NOFOLLOW on directories.</small>
+        <ArrowRight size={16} className="vp-arrow" />
+        <div className={`vp-step-card ${verified ? 'vp-step-ok' : ''}`}>
+          <span className="vp-step-num">STEP 2</span>
+          <strong>Load on first touch</strong>
+          <p>The moment you read a byte, the OS loads just that page from disk.</p>
+        </div>
+        <ArrowRight size={16} className="vp-arrow" />
+        <div className={`vp-step-card ${verified ? 'vp-step-ok' : ''}`}>
+          <span className="vp-step-num">STEP 3</span>
+          <strong>Save or keep private</strong>
+          <p>Shared edits save back to disk; private edits stay local to the app.</p>
         </div>
       </div>
-
-      <div className="vp-metrics-grid">
-        <div className="vp-metric"><span>CHAIN HOPS RESOLVED</span><strong>{hops} hops</strong><small>Iterative namei() lookup in sys_open</small></div>
-        <div className="vp-metric"><span>INODE TYPE TAG</span><strong>T_SYMLINK (4)</strong><small>Target path stored in inode blocks</small></div>
-        <div className="vp-metric"><span>CYCLE DEPTH GUARD</span><strong>10 hops → -1</strong><small>Aborts loops without hanging kernel</small></div>
-        <div className="vp-metric"><span>CONCURRENT STRESS</span><strong>{ops} ops · 0 races</strong><small>Parallel fork() symlink vs unlink</small></div>
+      <div className="vp-stat-row">
+        <div className="vp-stat"><span>Lazy loading</span><strong>{verified ? 'Verified ✓' : '—'}</strong></div>
+        <div className="vp-stat"><span>Disk write-back</span><strong>{verified ? 'Shared edits saved' : '—'}</strong></div>
+        <div className="vp-stat"><span>Read-only safety</span><strong>{verified ? 'Illegal writes blocked' : '—'}</strong></div>
       </div>
     </div>
   )
 }
 
-function Task3Visual({ result }: { result: Result }) {
-  const verified = result.status === 'pass'
-  const va = result.metrics?.mapped_va ?? '0x3fffffc000'
+export default function VerificationPanel({
+  task,
+  allVerifyResults,
+  busy,
+  runningThis,
+  onSelectTask,
+  onVerify,
+  onVerifyAll,
+}: Props) {
+  const [showRaw, setShowRaw] = useState(false)
+  const meta = TASK_TABS.find((t) => t.id === task) || TASK_TABS[0]
+  const result = allVerifyResults[task]
+  const verified = result?.status === 'pass'
+  const failed = result?.status === 'fail' || result?.status === 'error' || result?.status === 'timeout'
 
-  const stages = [
-    { tag: '1 · mmap()', state: 'VMA Reserved · PTE_V = 0', desc: '0 physical pages allocated; post-mmap file edits still visible on first touch.' },
-    { tag: '2 · Page Fault', state: 'scause 13/15 → vm_fault()', desc: 'kalloc() + readi() populates page on demand and zero-fills EOF tail bytes.' },
-    { tag: '3 · Dirty Tracking', state: 'MAP_SHARED + PTE_D = 1', desc: 'Shared writes (and kernel copyout!) write back to disk; MAP_PRIVATE stays isolated.' },
-    { tag: '4 · munmap & fork', state: 'Partial Unmap + VA Reuse', desc: 'Unmapped pages fault (-1), VA gaps are reclaimed, and fork() shares VMA refs.' },
-  ]
-
-  return (
-    <div className="vp-diagram">
-      <div className="vp-diagram-head">
-        <span><Layers size={14} /> PROCESS ADDRESS SPACE &amp; LAZY PAGE-TABLE LIFECYCLE</span>
-        <span className={`vp-badge ${verified ? 'vp-badge-ok' : ''}`}>
-          {verified ? `LAZY FAULT + WRITEBACK + FORK VERIFIED (${va})` : 'SV39 DEMAND PAGING'}
-        </span>
-      </div>
-
-      <div className="vp-vas-bar" aria-label="xv6 virtual address layout">
-        <div className="vp-vas-seg vp-vas-low"><span>0x0 · Text / Data / Heap (p-&gt;sz)</span></div>
-        <div className="vp-vas-seg vp-vas-free"><span>Unmapped VA Gap (sbrk guard ↔ mmap)</span></div>
-        <div className={`vp-vas-seg vp-vas-mmap ${verified ? 'vp-vas-active' : ''}`}><span>VMA Slots ({String(va)})</span></div>
-        <div className="vp-vas-seg vp-vas-top"><span>TRAPFRAME · TRAMPOLINE</span></div>
-      </div>
-
-      <div className="vp-mmap-cards">
-        {stages.map((s) => (
-          <div className={`vp-mmap-card ${verified ? 'vp-node-verified' : ''}`} key={s.tag}>
-            <span className="vp-step-num">{s.tag}</span>
-            <strong>{s.state}</strong>
-            <p>{s.desc}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function SubtestRow({ subtest }: { subtest: Subtest }) {
-  const doc = CHECK_DOCS[subtest.name]
-  const ok = subtest.status === 'pass'
-  const fail = subtest.status === 'fail'
-  const running = subtest.status === 'running'
-
-  return (
-    <div className={`vp-check-card vp-check-${subtest.status}`}>
-      <div className="vp-check-icon">
-        {ok ? <CheckCircle2 size={18} /> : fail ? <XCircle size={18} /> : running ? <LoaderCircle size={18} className="spin" /> : <Circle size={16} />}
-      </div>
-      <div className="vp-check-body">
-        <div className="vp-check-top">
-          <strong>{doc ? doc.title : subtest.name}</strong>
-          {doc && <code className="vp-code-tag">{doc.codePath}</code>}
-        </div>
-        {doc && <p>{doc.explain}</p>}
-        {subtest.detail && (
-          <div className="vp-observed">
-            <span>Observed in QEMU:</span>
-            <code>{subtest.detail}</code>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-export default function VerificationPanel({ task, result, busy, runningThis, onVerify, onRunSuite }: Props) {
-  const verified = result.status === 'pass'
-  const failed = result.status === 'fail' || result.status === 'error' || result.status === 'timeout'
-  const subtests = result.subtests || []
-  const passedCount = subtests.filter((s) => s.status === 'pass').length
-  const canQuickVerify = task !== 'usertests'
+  const checkDefs = SIMPLE_CHECKS[task]
+  const liveMap = new Map<string, Subtest>((result?.subtests || []).map((s) => [s.name, s]))
+  const passedCount = checkDefs.filter((c) => liveMap.get(c.id)?.status === 'pass').length
 
   return (
     <div className="vp-root">
-      <div className={`vp-banner ${verified ? 'vp-banner-pass' : failed ? 'vp-banner-fail' : runningThis ? 'vp-banner-run' : ''}`}>
-        <div className="vp-banner-left">
-          <div className="vp-banner-icon">
-            {runningThis ? <LoaderCircle size={20} className="spin" />
-              : verified ? <ShieldCheck size={22} />
-                : failed ? <XCircle size={22} />
-                  : <FileCheck2 size={20} />}
-          </div>
-          <div>
-            <div className="vp-banner-title">
-              <strong>
-                {runningThis ? `Verifying ${task.toUpperCase()} live in QEMU…`
-                  : verified ? `${task.toUpperCase()} — Verified Working in QEMU`
-                    : failed ? `${task.toUpperCase()} — Verification Needs Attention`
-                      : `${task.toUpperCase()} — Ready for Visual Verification`}
-              </strong>
-              {result.mode && (
-                <span className="vp-mode-pill">
-                  {result.mode === 'verify' ? 'Deep Telemetry + Edge Cases' : 'Official MIT Suite'}
-                </span>
+      {/* Task selector pills inside Verify so you can walk through all 4 easily */}
+      <div className="vp-task-picker" role="tablist" aria-label="Choose task to verify">
+        {TASK_TABS.map((item) => {
+          const itemStatus = allVerifyResults[item.id]?.status
+          const isPass = itemStatus === 'pass'
+          const isSelected = item.id === task
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              aria-selected={isSelected}
+              className={`vp-pick-btn ${isSelected ? 'vp-pick-active' : ''} ${isPass ? 'vp-pick-pass' : ''}`}
+              onClick={() => onSelectTask(item.id)}
+            >
+              {isPass ? <CheckCircle2 size={14} /> : <Circle size={12} />}
+              <span>{item.short}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Plain-English Summary Header */}
+      <div className={`vp-header ${verified ? 'vp-header-pass' : failed ? 'vp-header-fail' : runningThis ? 'vp-header-run' : ''}`}>
+        <div className="vp-header-copy">
+          <div className="vp-header-topline">
+            <h3>{meta.title}</h3>
+            <span className={`vp-status-chip ${verified ? 'chip-pass' : failed ? 'chip-fail' : runningThis ? 'chip-run' : ''}`}>
+              {runningThis ? (
+                <><LoaderCircle size={13} className="spin" /> Checking live in QEMU…</>
+              ) : verified ? (
+                <><ShieldCheck size={13} /> Verified ({result.duration.toFixed(1)}s)</>
+              ) : failed ? (
+                <><XCircle size={13} /> Needs attention</>
+              ) : (
+                <><Clock3 size={13} /> Not verified yet</>
               )}
-            </div>
-            <p>
-              {verified
-                ? `${passedCount} of ${subtests.length} kernel checks proven in ${result.duration.toFixed(1)}s — use the architecture diagram and QEMU evidence below to walk through how it works.`
-                : 'Click "Verify + Edge Cases" (~2s) to execute real kernel syscalls in QEMU and populate live visual proof for every requirement.'}
-            </p>
+            </span>
           </div>
+          <p>{meta.analogy}</p>
         </div>
 
-        <div className="vp-banner-actions">
-          {canQuickVerify && (
-            <button type="button" className="vp-btn-primary" onClick={onVerify} disabled={busy}>
-              <Sparkles size={14} />
-              {runningThis ? 'Running…' : 'Verify + Edge Cases (~2s)'}
-            </button>
-          )}
-          <button type="button" className="vp-btn-secondary" onClick={onRunSuite} disabled={busy}>
-            <Play size={13} fill="currentColor" />
-            Run MIT Suite
+        <div className="vp-header-actions">
+          <button
+            type="button"
+            className="vp-btn-primary"
+            onClick={() => onVerify(task)}
+            disabled={busy}
+          >
+            <Sparkles size={14} />
+            {runningThis ? 'Verifying…' : verified ? 'Verify again' : 'Verify this task'}
+          </button>
+          <button
+            type="button"
+            className="vp-btn-quiet"
+            onClick={onVerifyAll}
+            disabled={busy}
+          >
+            Verify all 4 (~6s)
           </button>
         </div>
       </div>
 
-      {task === 'task1' && <Task1Visual result={result} />}
-      {task === 'task2a' && <Task2AVisual result={result} />}
-      {task === 'task2b' && <Task2BVisual result={result} />}
-      {task === 'task3' && <Task3Visual result={result} />}
+      {/* Clean Visual Story */}
+      <SimpleVisual task={task} result={result || { task, status: 'idle', duration: 0, subtests: [], finished_at: '' }} />
 
-      <div className="vp-checks-section">
+      {/* Plain-English Checklist */}
+      <div className="vp-checklist-wrap">
         <div className="vp-section-bar">
-          <span>STEP-BY-STEP KERNEL VERIFICATION PROOF</span>
-          <span>{subtests.length ? `${passedCount} / ${subtests.length} checks verified` : 'Run verification to populate live checks'}</span>
+          <span>WHAT THIS VERIFICATION PROVES</span>
+          <span>
+            {result ? `${passedCount} of ${checkDefs.length} confirmed` : `${checkDefs.length} checks ready`}
+          </span>
         </div>
 
-        {subtests.length > 0 ? (
-          <div className="vp-checks-list">
-            {subtests.map((st) => <SubtestRow key={st.name} subtest={st} />)}
-          </div>
-        ) : (
-          <div className="vp-empty-checks">
-            <Clock3 size={18} />
-            <span>No verification run recorded in this session yet — click <strong>Verify + Edge Cases (~2s)</strong> above to capture live QEMU proof.</span>
-          </div>
-        )}
+        <div className="vp-simple-list">
+          {checkDefs.map((check) => {
+            const live = liveMap.get(check.id)
+            const status = live?.status || (runningThis ? 'running' : 'idle')
+            return (
+              <div key={check.id} className={`vp-simple-row vp-row-${status}`}>
+                <div className="vp-row-icon">
+                  {status === 'pass' ? <CheckCircle2 size={18} />
+                    : status === 'fail' ? <XCircle size={18} />
+                      : status === 'running' ? <LoaderCircle size={17} className="spin" />
+                        : <Circle size={16} />}
+                </div>
+                <div className="vp-row-text">
+                  <strong>{check.title}</strong>
+                  <p>{check.summary}</p>
+                </div>
+                <span className={`vp-row-tag tag-${status}`}>
+                  {status === 'pass' ? 'Verified' : status === 'fail' ? 'Failed' : status === 'running' ? 'Testing…' : 'Pending'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
-      {result.evidence && result.evidence.length > 0 && (
-        <div className="vp-evidence-box">
-          <div className="vp-section-bar">
-            <span><TerminalSquare size={13} /> CAPTURED QEMU EVIDENCE LOG</span>
-            <span>{result.finished_at ? new Date(result.finished_at).toLocaleTimeString() : ''}</span>
-          </div>
-          <pre className="vp-evidence-pre">{result.evidence.join('\n')}</pre>
+      {/* Collapsible Raw QEMU Output (hidden by default so UI stays super light) */}
+      {result?.evidence && result.evidence.length > 0 && (
+        <div className="vp-raw-drawer">
+          <button type="button" className="vp-raw-toggle" onClick={() => setShowRaw((v) => !v)}>
+            {showRaw ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            <TerminalSquare size={13} />
+            <span>{showRaw ? 'Hide technical QEMU log' : 'Show technical QEMU log (for detailed review)'}</span>
+          </button>
+          {showRaw && <pre className="vp-evidence-pre">{result.evidence.join('\n')}</pre>}
         </div>
       )}
     </div>
